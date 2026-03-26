@@ -65,6 +65,29 @@ app.get('/api/settings', verifyAuth, async (req, res) => {
   }
 });
 
+app.get('/api/logs', verifyAuth, async (req, res) => {
+  try {
+    const snapshot = await db.collection('system_logs')
+      .orderBy('timestamp', 'desc')
+      .limit(50)
+      .get();
+      
+    const logs = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      logs.push({
+        id: doc.id,
+        level: data.level,
+        message: data.message,
+        time: data.createdAt
+      });
+    });
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/settings', verifyAuth, async (req, res) => {
   try {
     const docRef = db.collection('users').doc(req.user.uid);

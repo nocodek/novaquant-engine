@@ -1,4 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
+const logger = require('./logger');
 
 function getBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -17,12 +18,12 @@ async function sendSignal(pair, timeframe, idm, type, entry) {
   if (creds) {
     try {
       await creds.bot.sendMessage(creds.chatId, message, { parse_mode: "Markdown" });
-      console.log(`[Telegram] Alert sent for ${pair} on ${timeframe}`);
+      logger.success(`Alert sent for ${pair} on ${timeframe}`);
     } catch (error) {
-      console.error("[Telegram Error] Failed to send message:", error.message);
+      logger.error(`Failed to send message: ${error.message}`);
     }
   } else {
-    console.warn("==> [Telegram Missing Keys] Signal not sent because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing from environment secrets:", message.replace(/\*/g, '').replace(/_/g, ''));
+    logger.warn(`Signal not sent because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing from environment secrets: ${message.replace(/\*/g, '').replace(/_/g, '')}`);
   }
 }
 

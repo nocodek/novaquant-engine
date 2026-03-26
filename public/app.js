@@ -396,3 +396,59 @@ async function checkServerStatus() {
 // Check immediately and then every 15 seconds
 checkServerStatus();
 setInterval(checkServerStatus, 15000);
+
+// --- System Logs Logic ---
+const openLogsBtn = document.getElementById('open-logs-btn');
+const closeLogsBtn = document.getElementById('close-logs-btn');
+const refreshLogsBtn = document.getElementById('refresh-logs-btn');
+const logsOverlay = document.getElementById('logs-overlay');
+const logsContent = document.getElementById('logs-content');
+
+openLogsBtn.addEventListener('click', () => {
+  logsOverlay.style.display = 'flex';
+  fetchLogs();
+});
+
+closeLogsBtn.addEventListener('click', () => {
+  logsOverlay.style.display = 'none';
+});
+
+refreshLogsBtn.addEventListener('click', () => {
+  fetchLogs();
+});
+
+async function fetchLogs() {
+  logsContent.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Fetching secure system logs...';
+  try {
+    const res = await authorizedFetch('/api/logs');
+    if (!res.ok) throw new Error('Failed to fetch logs');
+    const logs = await res.json();
+    
+    if (logs.length === 0) {
+      logsContent.innerHTML = 'No activity recorded yet.';
+      return;
+    }
+    
+    let html = '';
+    logs.forEach(log => {
+      const colorMap = {
+        'INFO': 'var(--text-main)',
+        'SUCCESS': 'var(--success)',
+        'WARN': 'orange',
+        'ERROR': 'var(--danger)'
+      };
+      
+      const c = colorMap[log.level] || 'var(--text-main)';
+      const d = new Date(log.time).toLocaleString('en-US', { timeZone: 'America/New_York' });
+      
+      html += `<div style="margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:8px; line-height:1.4;">
+        <span style="color:var(--accent); font-size:0.8rem; filter:opacity(0.8)">[${d}]</span> 
+        <strong style="color:${c}; width:60px; display:inline-block;">[${log.level}]</strong> 
+        <span style="color:var(--text-main)">${log.message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>
+      </div>`;
+    });
+    logsContent.innerHTML = html;
+  } catch(e) {
+    logsContent.innerHTML = `<span style="color:var(--danger)">Error loading logs: ${e.message}</span>`;
+  }
+}

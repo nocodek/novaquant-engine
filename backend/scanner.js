@@ -3,6 +3,7 @@ const dotenv = require('dotenv');
 const { sendSignal } = require('./telegram');
 const { fetchTV } = require('./tv-fetcher');
 const { runLiveScannerData } = require('./backtest-api');
+const logger = require('./logger');
 
 dotenv.config();
 
@@ -20,12 +21,12 @@ function isForexClosed() {
 }
 
 async function scanSymbols(getSettings, interval, timeframeLabel) {
-  console.log(`[Scanner] Polling logic triggered for ${timeframeLabel}...`);
+  logger.info(`Polling logic triggered for ${timeframeLabel}...`);
   const settings = await getSettings();
   
   const forexClosed = isForexClosed();
   if (forexClosed) {
-      console.log(`[Scanner] Forex market is closed. Skipping Forex pairs.`);
+      logger.info(`Forex market is closed. Skipping Forex pairs.`);
   }
 
   const allSymbols = [
@@ -49,7 +50,7 @@ async function scanSymbols(getSettings, interval, timeframeLabel) {
           }
       }
     } catch(err) {
-      console.error(`[Scanner Error] Failed TV fetch for ${symbol}:`, err.message);
+      logger.error(`Failed TV fetch for ${symbol}: ${err.message}`);
     }
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
@@ -63,7 +64,7 @@ function startCronJobs(getSettings) {
 
   // Initial Run on Start
   setTimeout(async () => {
-      console.log("[Scanner] Running initial server-start scan...");
+      logger.info("Running initial server-start scan...");
       await scanSymbols(getSettings, '1h', '1 Hour');
       await scanSymbols(getSettings, '30m', '30 Minute');
   }, 5000);
@@ -79,7 +80,7 @@ function startCronJobs(getSettings) {
       await scanSymbols(getSettings, '30m', '30 Minute');
   }, cronOptions);
 
-  console.log(`[Scanner] Dual 1H/30m Strategy Cron jobs scheduled using timezone ${cronOptions.timezone}`);
+  logger.info(`Dual 1H/30m Strategy Cron jobs scheduled using timezone ${cronOptions.timezone}`);
 }
 
 module.exports = { startCronJobs };
