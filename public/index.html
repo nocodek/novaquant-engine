@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovaQuant Dashboard</title>
+  
+  <meta name="description" content="Configure tracking for Top-Down Forex and Crypto MTF parameters.">
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <link rel="stylesheet" type="text/css" href="https://npmcdn.com/flatpickr/dist/themes/dark.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="background-blobs">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <div class="glass-container">
+    <header>
+      <div class="logo">
+        <i class="fa-solid fa-chart-candlestick"></i>
+        <h1>NovaQuant Engine</h1>
+      </div>
+      <p class="subtitle">Top-Down Daily/1H/30m Institutional Framework</p>
+    </header>
+
+    <main>
+      <section class="panel crypto-panel">
+        <div class="panel-header">
+          <h2><i class="fa-brands fa-bitcoin"></i> Cryptocurrency Pairs</h2>
+        </div>
+        <div class="pair-list" id="crypto-list">
+          <!-- Populated via JS -->
+          <div class="skeleton-loader"></div>
+        </div>
+        <form class="add-form" id="crypto-form">
+          <input type="text" id="crypto-input" placeholder="e.g. BTC/USD" required>
+          <button type="submit" class="btn-primary"><i class="fa-solid fa-plus"></i> Add</button>
+        </form>
+      </section>
+
+      <section class="panel forex-panel">
+        <div class="panel-header">
+          <h2><i class="fa-solid fa-money-bill-trend-up"></i> Forex Pairs</h2>
+        </div>
+        <div class="pair-list" id="forex-list">
+          <!-- Populated via JS -->
+          <div class="skeleton-loader"></div>
+        </div>
+        <form class="add-form" id="forex-form">
+          <input type="text" id="forex-input" placeholder="e.g. EUR/USD" required>
+          <button type="submit" class="btn-primary"><i class="fa-solid fa-plus"></i> Add</button>
+        </form>
+      </section>
+      
+
+      <!-- UI Backtester Console -->
+      <section class="panel console-panel">
+        <div class="panel-header">
+          <h2><i class="fa-solid fa-microchip"></i> Backtesting Engine</h2>
+        </div>
+        <form class="add-form" id="backtest-form" style="margin-bottom: 20px; flex-wrap: wrap;">
+          <input type="text" id="backtest-input" placeholder="Pair (e.g. BTC/USD)" required style="flex:1;">
+          <input type="text" id="bt-range" placeholder="Select Date Range..." required style="flex:2; background:rgba(0,0,0,0.3); border:1px solid var(--glass-border); padding:12px; color:var(--text-main); border-radius:8px; cursor:pointer;">
+          <button type="submit" id="backtest-btn" class="btn-primary" style="flex:1;"><i class="fa-solid fa-play"></i> Backtest</button>
+        </form>
+        <div id="backtest-results" style="display:none; background:rgba(0,0,0,0.3); padding:15px; border-radius:8px; font-family:monospace; line-height: 1.6;">
+          <div id="bt-loader" style="color:var(--text-muted);"><i class="fa-solid fa-spinner fa-spin"></i> Fetching OHLC data and mapping Daily/LTF structure (~20 sec)...</div>
+          <div id="bt-content" style="display:none; color: var(--text-main);"></div>
+          <button id="bt-telegram-btn" class="btn-primary" style="display:none; margin-top:20px; font-family:'Outfit', sans-serif;"><i class="fa-brands fa-telegram"></i> Send Last 3 to Telegram</button>
+        </div>
+      </section>
+    </main>
+    
+    <footer>
+      <p>Configured exclusively for <strong>Top-Down 4H FVG</strong> institutional sweeps with mathematically precise 7-Step manipulation validation.</p>
+    </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="app.js"></script>
+</body>
+</html>
