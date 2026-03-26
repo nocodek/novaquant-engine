@@ -1,3 +1,99 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+const firebaseConfig = {
+  projectId: "novaquant-engine-1",
+  appId: "1:492487783489:web:e66c8245df094527b042c0",
+  storageBucket: "novaquant-engine-1.firebasestorage.app",
+  apiKey: "AIzaSyARlJTyvyo48sJbwyFR3svGjAf65LX5LNI",
+  authDomain: "novaquant-engine-1.firebaseapp.com",
+  messagingSenderId: "492487783489",
+  measurementId: "G-EQ5SZDBW84"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const provider = new GoogleAuthProvider();
+
+// UI Elements
+const authOverlay = document.getElementById('auth-overlay');
+const mainApp = document.getElementById('main-app');
+const loginForm = document.getElementById('login-form');
+const emailInput = document.getElementById('auth-email');
+const passwordInput = document.getElementById('auth-password');
+const googleBtn = document.getElementById('google-login-btn');
+const authError = document.getElementById('auth-error');
+const userEmailDisplay = document.getElementById('user-email-display');
+const logoutBtn = document.getElementById('logout-btn');
+
+let currentUser = null;
+
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    currentUser = user;
+    authOverlay.style.display = 'none';
+    mainApp.style.display = 'block';
+    mainApp.style.filter = 'none';
+    userEmailDisplay.textContent = user.email;
+    init(); 
+  } else {
+    currentUser = null;
+    authOverlay.style.display = 'flex';
+    mainApp.style.display = 'none';
+    mainApp.style.filter = 'blur(5px)';
+  }
+});
+
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = emailInput.value;
+  const password = passwordInput.value;
+  authError.textContent = '';
+  try {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else {
+        throw err;
+      }
+    }
+  } catch (err) {
+    authError.textContent = 'Error: ' + err.message;
+  }
+});
+
+googleBtn.addEventListener('click', async () => {
+  try {
+    await signInWithPopup(auth, provider);
+  } catch (err) {
+    authError.textContent = 'Google Sign-In Error: ' + err.message;
+  }
+});
+
+logoutBtn.addEventListener('click', () => {
+  signOut(auth);
+});
+
+async function authorizedFetch(url, options = {}) {
+  if (!currentUser) throw new Error("Not authenticated");
+  const token = await currentUser.getIdToken();
+  const headers = {
+    ...options.headers,
+    'Authorization': `Bearer ${token}`
+  };
+  return fetch(url, { ...options, headers });
+}
+
 const API_URL = '/api/settings';
 
 // State
@@ -22,19 +118,18 @@ async function init() {
 
 async function fetchSettings() {
   try {
-    const res = await fetch(API_URL);
+    const res = await authorizedFetch(API_URL);
     const data = await res.json();
     state = data;
   } catch (err) {
     console.error('Failed to fetch settings:', err);
-    // Silent fail -> show empty pairs
     state = { cryptoPairs: [], forexPairs: [] };
   }
 }
 
 async function updateServer() {
   try {
-    const res = await fetch(API_URL, {
+    const res = await authorizedFetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(state)
@@ -119,9 +214,6 @@ window.removePair = (type, itemToRemove) => {
   updateServer();
 };
 
-// Start App
-init();
-
 // Backtester Logic
 const backtestForm = document.getElementById('backtest-form');
 const backtestInput = document.getElementById('backtest-input');
@@ -164,7 +256,7 @@ backtestForm.addEventListener('submit', async (e) => {
   btTelegramBtn.style.display = 'none';
 
   try {
-    const res = await fetch('/api/backtest', {
+    const res = await authorizedFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol: val, startDate, endDate })
@@ -237,7 +329,7 @@ btTelegramBtn.addEventListener('click', async () => {
   btTelegramBtn.style.opacity = '0.5';
   
   try {
-    const res = await fetch('/api/telegram-backtest', {
+    const res = await authorizedFetch('/api/telegram-backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol: currentBtSymbol, results: latestBtResults })
@@ -255,3 +347,52 @@ btTelegramBtn.addEventListener('click', async () => {
     btTelegramBtn.style.opacity = '1';
   }, 3000);
 });
+
+// --- Server Status Checker ---
+const statusText = document.getElementById('status-text');
+const statusDot = document.getElementById('status-dot');
+const overlayStatusText = document.getElementById('overlay-status-text');
+const overlayStatusDot = document.getElementById('overlay-status-dot');
+
+async function checkServerStatus() {
+  try {
+    const res = await fetch('/api/status');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.status === 'online') {
+        const onlineColor = 'var(--success)';
+        statusText.textContent = 'ENGINE ONLINE';
+        statusText.style.color = onlineColor;
+        statusDot.style.background = onlineColor;
+        statusDot.style.boxShadow = `0 0 10px ${onlineColor}`;
+        
+        if (overlayStatusText) {
+          overlayStatusText.textContent = 'ENGINE ONLINE';
+          overlayStatusText.style.color = onlineColor;
+          overlayStatusDot.style.background = onlineColor;
+          overlayStatusDot.style.boxShadow = `0 0 10px ${onlineColor}`;
+        }
+        return;
+      }
+    }
+  } catch (e) {
+    // Fall through to offline
+  }
+  
+  const offlineColor = 'var(--danger)';
+  statusText.textContent = 'ENGINE OFFLINE';
+  statusText.style.color = offlineColor;
+  statusDot.style.background = offlineColor;
+  statusDot.style.boxShadow = `0 0 10px ${offlineColor}`;
+  
+  if (overlayStatusText) {
+    overlayStatusText.textContent = 'ENGINE OFFLINE';
+    overlayStatusText.style.color = offlineColor;
+    overlayStatusDot.style.background = offlineColor;
+    overlayStatusDot.style.boxShadow = `0 0 10px ${offlineColor}`;
+  }
+}
+
+// Check immediately and then every 15 seconds
+checkServerStatus();
+setInterval(checkServerStatus, 15000);

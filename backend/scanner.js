@@ -21,7 +21,7 @@ function isForexClosed() {
 
 async function scanSymbols(getSettings, interval, timeframeLabel) {
   console.log(`[Scanner] Polling logic triggered for ${timeframeLabel}...`);
-  const settings = getSettings();
+  const settings = await getSettings();
   
   const forexClosed = isForexClosed();
   if (forexClosed) {

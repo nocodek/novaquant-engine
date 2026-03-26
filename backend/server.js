@@ -3,10 +3,13 @@ const cors = require('cors');
 const path = require('path');
 const { startCronJobs } = require('./scanner');
 const dotenv = require('dotenv');
+const admin = require('firebase-admin');
 
 dotenv.config();
 
-
+// Initialize Firebase Admin (Uses Default Credentials automatically on App Hosting)
+admin.initializeApp();
+const db = admin.firestore();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,11 +18,31 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Default settings
-let activeSettings = {
-  cryptoPairs: [
-    'BTC/USD', 'XRP/USD'
-  ],
+// Public health check endpoint for frontend status indicator
+app.get('/api/status', (req, res) => {
+  res.json({ status: 'online', timestamp: new Date() });
+});
+
+// Middleware to verify Firebase Auth token
+const verifyAuth = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  }
+  
+  const token = authHeader.split(' ')[1];
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.user = decodedToken;
+    next();
+  } catch (err) {
+    res.status(403).json({ error: 'Unauthorized: Invalid token' });
+  }
+};
+
+// Default fallback settings for new users
+const defaultSettings = {
+  cryptoPairs: ['BTC/USD', 'XRP/USD'],
   forexPairs: [
     'XAU/USD', 'EUR/JPY', 'USD/JPY', 'GBP/USD', 'GBP/JPY', 
     'NZD/USD', 'AUD/USD', 'AUD/CAD', 'EUR/USD', 'USD/CHF', 
@@ -28,20 +51,39 @@ let activeSettings = {
   ]
 };
 
-app.get('/api/settings', (req, res) => {
-  res.json(activeSettings);
+app.get('/api/settings', verifyAuth, async (req, res) => {
+  try {
+    const docRef = db.collection('users').doc(req.user.uid);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+      await docRef.set(defaultSettings);
+      return res.json(defaultSettings);
+    }
+    res.json(doc.data());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/api/settings', (req, res) => {
-  activeSettings = { ...activeSettings, ...req.body };
-  res.json({ success: true, activeSettings });
+app.post('/api/settings', verifyAuth, async (req, res) => {
+  try {
+    const docRef = db.collection('users').doc(req.user.uid);
+    // Merge new settings with existing ones
+    await docRef.set(req.body, { merge: true });
+    
+    // Fetch updated settings to return
+    const updatedDoc = await docRef.get();
+    res.json({ success: true, activeSettings: updatedDoc.data() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 
 
 const { runBacktestData } = require('./backtest-api');
 
-app.post('/api/backtest', async (req, res) => {
+app.post('/api/backtest', verifyAuth, async (req, res) => {
   const { symbol, startDate, endDate } = req.body;
   if (!symbol || !startDate || !endDate) return res.status(400).json({ error: "Missing parameters" });
   try {
@@ -55,7 +97,7 @@ app.post('/api/backtest', async (req, res) => {
 
 const { sendBacktestReport } = require('./telegram');
 
-app.post('/api/telegram-backtest', async (req, res) => {
+app.post('/api/telegram-backtest', verifyAuth, async (req, res) => {
   const { symbol, results } = req.body;
   if (!symbol || !results) return res.status(400).json({ error: "Missing data" });
   try {
@@ -66,8 +108,32 @@ app.post('/api/telegram-backtest', async (req, res) => {
   }
 });
 
-// Pass an accessor so scanner can always get latest settings
-const getSettings = () => activeSettings;
+// Provide an accessor so the global scanner can get an aggregated list of unique pairs across all users
+const getSettings = async () => {
+  try {
+    const snapshot = await db.collection('users').get();
+    const allCrypto = new Set();
+    const allForex = new Set();
+    
+    if (snapshot.empty) {
+      return defaultSettings;
+    }
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.cryptoPairs) data.cryptoPairs.forEach(p => allCrypto.add(p));
+      if (data.forexPairs) data.forexPairs.forEach(p => allForex.add(p));
+    });
+    
+    return {
+      cryptoPairs: Array.from(allCrypto),
+      forexPairs: Array.from(allForex)
+    };
+  } catch (err) {
+    console.error('[Scanner] Failed to fetch aggregated settings from Firestore:', err);
+    return defaultSettings;
+  }
+};
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
