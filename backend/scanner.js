@@ -1,8 +1,9 @@
 const cron = require('node-cron');
 const dotenv = require('dotenv');
-const { sendSignal } = require('./telegram');
+const { sendSignal, send180Signal } = require('./telegram');
 const { fetchTV } = require('./tv-fetcher');
 const { runLiveScannerData } = require('./backtest-api');
+const { run180Scanner } = require('./strategy-180');
 const logger = require('./logger');
 
 dotenv.config();
@@ -56,6 +57,40 @@ async function scanSymbols(getSettings, interval, timeframeLabel) {
   }
 }
 
+async function scan180Symbols(getSettings) {
+  logger.info(`Polling 180 Strategy for 5m...`);
+  const settings = await getSettings();
+  
+  const forexClosed = isForexClosed();
+  
+  const allSymbols = [
+      ...settings.cryptoPairs, 
+      ...(forexClosed ? [] : settings.forexPairs)
+  ];
+
+  for (const symbol of allSymbols) {
+    try {
+      const setups = await run180Scanner(symbol);
+      if (setups && setups.length > 0) {
+          const latestSetup = setups[setups.length - 1];
+          // Use a specific key for 180 strategy to avoid collision
+          const setupKey = `${symbol}-180-5m-${latestSetup.datetime}`;
+          
+          const todayStr = new Date().toLocaleString('sv-SE', { timeZone: 'Africa/Lagos' }).substring(0, 10);
+          
+          if (!lastProcessed[setupKey] && latestSetup.datetime.startsWith(todayStr)) {
+              lastProcessed[setupKey] = true;
+              let action = latestSetup.type.includes('BUY') ? 'BUY' : 'SELL';
+              send180Signal(symbol, action, latestSetup.entry, latestSetup.sl, latestSetup.context);
+          }
+      }
+    } catch(err) {
+      logger.error(`Failed 180 TV fetch for ${symbol}: ${err.message}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+}
+
 function startCronJobs(getSettings) {
   const cronOptions = {
     scheduled: true,
@@ -67,6 +102,7 @@ function startCronJobs(getSettings) {
       logger.info("Running initial server-start scan...");
       await scanSymbols(getSettings, '1h', '1 Hour');
       await scanSymbols(getSettings, '30m', '30 Minute');
+      await scan180Symbols(getSettings);
   }, 5000);
 
   // Hourly Polling for both 1H and 30m (runs at minute 1 sequentially)
@@ -80,7 +116,12 @@ function startCronJobs(getSettings) {
       await scanSymbols(getSettings, '30m', '30 Minute');
   }, cronOptions);
 
-  logger.info(`Dual 1H/30m Strategy Cron jobs scheduled using timezone ${cronOptions.timezone}`);
+  // 180 Strategy Polling (runs every 5 minutes)
+  cron.schedule('*/5 * * * *', async () => {
+      await scan180Symbols(getSettings);
+  }, cronOptions);
+
+  logger.info(`Dual 1H/30m Strategy & 180 Strategy Cron jobs scheduled using timezone ${cronOptions.timezone}`);
 }
 
 module.exports = { startCronJobs };

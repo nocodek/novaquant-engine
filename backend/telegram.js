@@ -27,6 +27,22 @@ async function sendSignal(pair, timeframe, idm, type, entry) {
   }
 }
 
+async function send180Signal(pair, action, entry, sl, context) {
+  const creds = getBot();
+  const message = `🚨 *[LIVE 180 STRATEGY]*\n\n🔹 *Pair*: ${pair}\n⏱ *Timeframe*: 5m\n👀 *Action*: ${action}\n📍 *Context*: ${context}\n🎯 *Entry Trigger*: ${entry}\n🛡️ *Stop Loss*: ${sl}\n\n_Review the 5m chart for execution and manage with 8MA trailing stop._`;
+  
+  if (creds) {
+    try {
+      await creds.bot.sendMessage(creds.chatId, message, { parse_mode: "Markdown" });
+      logger.success(`180 Strategy alert sent for ${pair}`);
+    } catch (error) {
+      logger.error(`Failed to send message: ${error.message}`);
+    }
+  } else {
+    logger.warn(`180 Signal not sent (missing creds): ${message.replace(/\*/g, '').replace(/_/g, '')}`);
+  }
+}
+
 async function sendBacktestReport(symbol, results) {
   const creds = getBot();
   if (!creds) {
@@ -56,4 +72,4 @@ async function sendBacktestReport(symbol, results) {
   return true;
 }
 
-module.exports = { sendSignal, sendBacktestReport };
+module.exports = { sendSignal, sendBacktestReport, send180Signal };
