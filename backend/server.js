@@ -111,20 +111,24 @@ app.post('/api/backtest', verifyAuth, async (req, res) => {
   const { symbol, startDate, endDate } = req.body;
   if (!symbol || !startDate || !endDate) return res.status(400).json({ error: "Missing parameters" });
   try {
-    // Run both strategies in parallel
-    const [resultsMTF, results180] = await Promise.all([
+    // Run MTF and both 180 strategies in parallel
+    const [resultsMTF, results180_5m, results180_15m] = await Promise.all([
       runBacktestData(symbol, startDate, endDate),
-      run180BacktestData(symbol, startDate, endDate)
+      run180BacktestData(symbol, startDate, endDate, '5m'),
+      run180BacktestData(symbol, startDate, endDate, '15m')
     ]);
     
-    if (resultsMTF.error && results180.error) {
-      return res.json({ success: false, error: `${resultsMTF.error} | ${results180.error}` });
+    if (resultsMTF.error) {
+      return res.json({ success: false, error: resultsMTF.error });
     }
     
     // Merge results
     const combinedResults = { ...resultsMTF };
-    if (!results180.error) {
-       combinedResults["180 Plan (5m)"] = results180;
+    if (!results180_5m.error) {
+       combinedResults["180 Plan (5m)"] = results180_5m;
+    }
+    if (!results180_15m.error) {
+       combinedResults["180 Plan (15m)"] = results180_15m;
     }
     
     res.json({ success: true, symbol, data: combinedResults });

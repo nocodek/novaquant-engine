@@ -27,9 +27,9 @@ async function sendSignal(pair, timeframe, idm, type, entry) {
   }
 }
 
-async function send180Signal(pair, action, entry, sl, context) {
+async function send180Signal(pair, action, entry, sl, context, timeframe = '5m') {
   const creds = getBot();
-  const message = `🚨 *[LIVE 180 STRATEGY]*\n\n🔹 *Pair*: ${pair}\n⏱ *Timeframe*: 5m\n👀 *Action*: ${action}\n📍 *Context*: ${context}\n🎯 *Entry Trigger*: ${entry}\n🛡️ *Stop Loss*: ${sl}\n\n_Review the 5m chart for execution and manage with 8MA trailing stop._`;
+  const message = `🚨 *[LIVE 180 STRATEGY]*\n\n🔹 *Pair*: ${pair}\n⏱ *Timeframe*: ${timeframe}\n👀 *Action*: ${action}\n📍 *Context*: ${context}\n🎯 *Entry Trigger*: ${entry}\n🛡️ *Stop Loss*: ${sl}\n\n_Review the ${timeframe} chart for execution and manage with 8MA trailing stop._`;
   
   if (creds) {
     try {
