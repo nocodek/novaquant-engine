@@ -283,9 +283,10 @@ backtestForm.addEventListener('submit', async (e) => {
                    const outcomeColor = setup.outcome === 'Win' ? 'var(--success)' : (setup.outcome === 'Loss' ? 'var(--danger)' : 'var(--text-muted)');
                    const action = setup.type.includes('BUY') ? 'BUY' : 'SELL';
                    outputHTML += `<div style="margin-bottom:8px;">
-                      <strong style="color:var(--text-main);">${setup.datetime} (UTC+1 Lagos)</strong> - 👀 Action: <strong style="color:var(--accent);">${action}</strong><br>
-                      🧲 Inducement Level: ${setup.idm || 'N/A'} <br>
-                      🎯 Nearest OB/BB Level: ${setup.entry} <br>
+                       <strong style="color:var(--text-main);">${setup.datetime} (UTC+1 Lagos)</strong> - 👀 Action: <strong style="color:var(--accent);">${action}</strong><br>
+                      ${setup.context ? `📍 Context: ${setup.context} <br>` : `🧲 Inducement Level: ${setup.idm || 'N/A'} <br>`}
+                      ${setup.sl ? `🛡️ Stop Loss: ${setup.sl} <br>` : ''}
+                      🎯 ${setup.context ? 'Entry Trigger' : 'Nearest OB/BB Level'}: ${setup.entry} <br>
                       ➔ Outcome: <strong style="color:${outcomeColor}">${setup.outcome}</strong>
                    </div>`;
                });

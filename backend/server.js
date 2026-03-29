@@ -105,14 +105,29 @@ app.post('/api/settings', verifyAuth, async (req, res) => {
 
 
 const { runBacktestData } = require('./backtest-api');
+const { run180BacktestData } = require('./strategy-180');
 
 app.post('/api/backtest', verifyAuth, async (req, res) => {
   const { symbol, startDate, endDate } = req.body;
   if (!symbol || !startDate || !endDate) return res.status(400).json({ error: "Missing parameters" });
   try {
-    const results = await runBacktestData(symbol, startDate, endDate);
-    if (results.error) return res.json({ success: false, error: results.error });
-    res.json({ success: true, symbol, data: results });
+    // Run both strategies in parallel
+    const [resultsMTF, results180] = await Promise.all([
+      runBacktestData(symbol, startDate, endDate),
+      run180BacktestData(symbol, startDate, endDate)
+    ]);
+    
+    if (resultsMTF.error && results180.error) {
+      return res.json({ success: false, error: `${resultsMTF.error} | ${results180.error}` });
+    }
+    
+    // Merge results
+    const combinedResults = { ...resultsMTF };
+    if (!results180.error) {
+       combinedResults["180 Plan (5m)"] = results180;
+    }
+    
+    res.json({ success: true, symbol, data: combinedResults });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }

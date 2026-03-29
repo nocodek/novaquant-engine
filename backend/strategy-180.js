@@ -157,4 +157,189 @@ async function run180Scanner(symbol) {
     }
 }
 
-module.exports = { run180Scanner };
+async function run180BacktestData(symbol, startDate, endDate) {
+    try {
+        console.log(`[180 Engine] Fetching data for ${symbol}...`);
+        
+        const raw5m = await fetchTV(symbol, '5m', 15000, endDate); 
+        
+        const startMs = new Date(startDate + 'T00:00:00Z').getTime();
+        const endMs = new Date(endDate + 'T23:59:59Z').getTime();
+        
+        if (raw5m.length < 250) {
+           return { error: 'Insufficient 5m historical data to compute 200MA.' };
+        }
+
+        const ma20 = calculateSMA(raw5m, 20);
+        const ma200 = calculateSMA(raw5m, 200);
+        const ma8 = calculateSMA(raw5m, 8);
+
+        let setups = [];
+        let dataCountInRange = 0;
+
+        for (let i = 200; i < raw5m.length - 1; i++) {
+            const currentCandle = raw5m[i];
+            
+            // Only process candles inside the chosen date range
+            if (currentCandle.timestamp < startMs || currentCandle.timestamp > endMs) {
+                continue;
+            }
+            dataCountInRange++;
+
+            const prevCandle = raw5m[i - 1];
+            
+            const prevOpen = parseFloat(prevCandle.open);
+            const prevClose = parseFloat(prevCandle.close);
+            const prevHigh = parseFloat(prevCandle.high);
+            const prevLow = parseFloat(prevCandle.low);
+            const prevBody = Math.abs(prevOpen - prevClose);
+            
+            const currentOpen = parseFloat(currentCandle.open);
+            const currentClose = parseFloat(currentCandle.close);
+            const currentHigh = parseFloat(currentCandle.high);
+            const currentLow = parseFloat(currentCandle.low);
+            const currentBody = Math.abs(currentOpen - currentClose);
+
+            const avgBodySize = calculateAverageBodySize(raw5m, 20, i - 1);
+            
+            const isElephantBar = prevBody > (avgBodySize * 1.5) && prevBody > 0;
+            if (!isElephantBar) continue;
+
+            const currentMa20 = ma20[i];
+            
+            let locationContext = "";
+            const distanceTo20MA = Math.abs(prevClose - currentMa20) / currentMa20;
+            const nearThreshold = (avgBodySize * 2) / prevClose; 
+            
+            if (distanceTo20MA <= nearThreshold) {
+                locationContext = "Expansion (Near 20 MA)";
+            } else if (distanceTo20MA > nearThreshold * 3) {
+                locationContext = "Snapback (Far from 20 MA)";
+            } else {
+                locationContext = "Standard Setup";
+            }
+
+            const prevIsRed = prevClose < prevOpen;
+            const currentIsGreen = currentClose > currentOpen;
+            const prevIsGreen = prevClose > prevOpen;
+            const currentIsRed = currentClose < currentOpen;
+
+            let setupFound = null;
+
+            if (prevIsRed && currentIsGreen) {
+                if (currentHigh >= prevHigh) {
+                    let entryPrice = prevHigh;
+                    const isGargantuan = prevBody > (avgBodySize * 3);
+                    if (isGargantuan) {
+                        entryPrice = prevOpen - (prevBody * 0.2); 
+                    }
+                    if (currentHigh >= entryPrice) {
+                        setupFound = {
+                            direction: 'BULLISH',
+                            type: 'BUY MARKET (Bull 180)',
+                            entry: entryPrice,
+                            sl: Math.min(currentLow, prevLow),
+                            context: locationContext,
+                            datetime: currentCandle.datetime
+                        };
+                    }
+                }
+            } else if (prevIsGreen && currentIsRed) {
+                if (currentLow <= prevLow) {
+                    let entryPrice = prevLow;
+                    const isGargantuan = prevBody > (avgBodySize * 3);
+                    if (isGargantuan) {
+                        entryPrice = prevOpen + (prevBody * 0.2); 
+                    }
+                    if (currentLow <= entryPrice) {
+                        setupFound = {
+                            direction: 'BEARISH',
+                            type: 'SELL MARKET (Bear 180)',
+                            entry: entryPrice,
+                            sl: Math.max(currentHigh, prevHigh),
+                            context: locationContext,
+                            datetime: currentCandle.datetime
+                        };
+                    }
+                }
+            }
+
+            if (setupFound) {
+                // Simulate outcome
+                let outcome = 'Pending';
+                let dynamicSl = setupFound.sl;
+                
+                // Trail forward max 50 bars to see the outcome
+                for (let k = i + 1; k < Math.min(i + 50, raw5m.length); k++) {
+                    const fHigh = parseFloat(raw5m[k].high);
+                    const fLow = parseFloat(raw5m[k].low);
+                    const fClose = parseFloat(raw5m[k].close);
+                    const fMa8 = ma8[k];
+                    const fMa20 = ma20[k];
+
+                    if (setupFound.direction === 'BULLISH') {
+                        // Check static loss / trailing hit first
+                        if (fLow <= dynamicSl) {
+                            outcome = (dynamicSl > setupFound.entry) ? 'Win' : 'Loss';
+                            break;
+                        }
+                        
+                        // Check if Snapback target hit
+                        if (locationContext.includes('Snapback') && fHigh >= fMa20) {
+                            outcome = 'Win';
+                            break; 
+                        }
+                        
+                        // Trailing SL logic: if price clears 8MA, trail under 8MA
+                        if (fClose > fMa8 && fMa8 > dynamicSl) {
+                            // Give a small buffer under the 8MA, or exact tick
+                            dynamicSl = fMa8;
+                        }
+
+                    } else if (setupFound.direction === 'BEARISH') {
+                        if (fHigh >= dynamicSl) {
+                            outcome = (dynamicSl < setupFound.entry) ? 'Win' : 'Loss';
+                            break;
+                        }
+                        
+                        // Check if Snapback target hit
+                        if (locationContext.includes('Snapback') && fLow <= fMa20) {
+                            outcome = 'Win';
+                            break;
+                        }
+                        
+                        if (fClose < fMa8 && fMa8 < dynamicSl) {
+                            dynamicSl = fMa8;
+                        }
+                    }
+                }
+
+                setups.push({
+                    datetime: setupFound.datetime,
+                    type: setupFound.type,
+                    context: setupFound.context,
+                    entry: setupFound.entry.toFixed(5),
+                    sl: setupFound.sl.toFixed(5),
+                    outcome: outcome
+                });
+            }
+        }
+        
+        const wins180 = setups.filter(s => s.outcome === 'Win').length;
+        const complete180 = setups.filter(s => s.outcome !== 'Pending').length;
+        const winRate180 = complete180 > 0 ? ((wins180 / complete180) * 100).toFixed(1) + '%' : '0%';
+
+        return {
+            candles: dataCountInRange,
+            setups: setups.length,
+            winRate: winRate180,
+            recent: setups.slice(-10).reverse()
+        };
+
+    } catch (e) {
+        console.error("180 Backtest Error:", e);
+        return { error: e.message };
+    }
+}
+
+module.exports = { run180Scanner, run180BacktestData };
