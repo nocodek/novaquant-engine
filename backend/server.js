@@ -105,17 +105,16 @@ app.post('/api/settings', verifyAuth, async (req, res) => {
 
 
 const { runBacktestData } = require('./backtest-api');
-const { run180BacktestData } = require('./strategy-180');
+const { runCRT4Backtest } = require('./strategy-crt4');
 
 app.post('/api/backtest', verifyAuth, async (req, res) => {
   const { symbol, startDate, endDate } = req.body;
   if (!symbol || !startDate || !endDate) return res.status(400).json({ error: "Missing parameters" });
   try {
-    // Run MTF and both 180 strategies in parallel
-    const [resultsMTF, results180_5m, results180_15m] = await Promise.all([
+    // Run MTF and CRT4 in parallel
+    const [resultsMTF, resultsCRT4] = await Promise.all([
       runBacktestData(symbol, startDate, endDate),
-      run180BacktestData(symbol, startDate, endDate, '5m'),
-      run180BacktestData(symbol, startDate, endDate, '15m')
+      runCRT4Backtest(symbol, startDate, endDate)
     ]);
     
     if (resultsMTF.error) {
@@ -124,11 +123,8 @@ app.post('/api/backtest', verifyAuth, async (req, res) => {
     
     // Merge results
     const combinedResults = { ...resultsMTF };
-    if (!results180_5m.error) {
-       combinedResults["180 Plan (5m)"] = results180_5m;
-    }
-    if (!results180_15m.error) {
-       combinedResults["180 Plan (15m)"] = results180_15m;
+    if (!resultsCRT4.error) {
+       combinedResults["CRT4"] = resultsCRT4;
     }
     
     res.json({ success: true, symbol, data: combinedResults });

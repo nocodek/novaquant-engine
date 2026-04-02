@@ -27,21 +27,6 @@ async function sendSignal(pair, timeframe, idm, type, entry) {
   }
 }
 
-async function send180Signal(pair, action, entry, sl, context, timeframe = '5m') {
-  const creds = getBot();
-  const message = `🚨 *[LIVE 180 STRATEGY]*\n\n🔹 *Pair*: ${pair}\n⏱ *Timeframe*: ${timeframe}\n👀 *Action*: ${action}\n📍 *Context*: ${context}\n🎯 *Entry Trigger*: ${entry}\n🛡️ *Stop Loss*: ${sl}\n\n_Review the ${timeframe} chart for execution and manage with 8MA trailing stop._`;
-  
-  if (creds) {
-    try {
-      await creds.bot.sendMessage(creds.chatId, message, { parse_mode: "Markdown" });
-      logger.success(`180 Strategy alert sent for ${pair}`);
-    } catch (error) {
-      logger.error(`Failed to send message: ${error.message}`);
-    }
-  } else {
-    logger.warn(`180 Signal not sent (missing creds): ${message.replace(/\*/g, '').replace(/_/g, '')}`);
-  }
-}
 
 async function sendBacktestReport(symbol, results) {
   const creds = getBot();
@@ -72,4 +57,37 @@ async function sendBacktestReport(symbol, results) {
   return true;
 }
 
-module.exports = { sendSignal, sendBacktestReport, send180Signal };
+async function sendCRT4Signal(pair, action, entry, sl, tp, tpSource, poiType, bosLevel, sweepLevel) {
+  const creds = getBot();
+  const emoji = action === 'BUY' ? '🟢' : '🔴';
+  const message = [
+    `🚨 *[CRT4 SIGNAL]*`,
+    ``,
+    `🔹 *Pair*: ${pair}`,
+    `${emoji} *Direction*: ${action}`,
+    ``,
+    `📊 *Setup Breakdown:*`,
+    `  ↳ 4H Sweep Level: \`${sweepLevel}\``,
+    `  ↳ 1H BOS Level: \`${bosLevel}\``,
+    `  ↳ POI Type: *${poiType}*`,
+    ``,
+    `🎯 *Entry*: \`${entry}\``,
+    `🛡️ *Stop Loss*: \`${sl}\``,
+    `🏁 *Take Profit*: \`${tp}\` _(${tpSource})_`,
+    ``,
+    `_Review the 1H chart. Enter only after confirmed POI retest._`
+  ].join('\n');
+
+  if (creds) {
+    try {
+      await creds.bot.sendMessage(creds.chatId, message, { parse_mode: 'Markdown' });
+      logger.success(`CRT4 alert sent for ${pair}`);
+    } catch (error) {
+      logger.error(`Failed to send CRT4 message: ${error.message}`);
+    }
+  } else {
+    logger.warn(`CRT4 Signal not sent (missing creds): ${message.replace(/\*/g, '').replace(/_/g, '')}`);
+  }
+}
+
+module.exports = { sendSignal, sendBacktestReport, sendCRT4Signal };
