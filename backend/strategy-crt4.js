@@ -181,41 +181,53 @@ function find1HPOI(data1h, bosIndex, direction, sweepTimestamp) {
 
 /**
  * TP = nearest Daily key level above entry (BULLISH) or below entry (BEARISH).
- * Scans Daily OBs, FVGs, and confirmed swing highs/lows.
- * Returns { level, source } or null.
+ *
+ * OB labelling logic:
+ *   - Demand OB (bull): last RED candle before a bullish move. Its HIGH is the level.
+ *     This zone is BELOW current price — relevant as TP for a BEARISH trade.
+ *   - Supply OB (bear): last GREEN candle before a bearish move. Its LOW is the level.
+ *     This zone is ABOVE current price — relevant as TP for a BULLISH trade.
+ *
+ * Also enforces a minimum distance of 10 pips so we don’t target levels sitting
+ * immediately on top of entry (already priced in / inside spread).
  */
-function findDailyTP(data4h, data1d, direction, entryPrice) {
-    const levels = [];
+function findDailyTP(data4h, data1d, direction, entryPrice, symbol) {
+    const minDist = 10 * getPipSize(symbol || 'DEFAULT');
+    const levels  = [];
 
-    // ── Daily FVGs ──────────────────────────────────────────────────────
+    // ── Daily FVGs ─────────────────────────────────────────────────────────
     for (let i = 2; i < data1d.length; i++) {
-        const c0 = data1d[i];     // current
-        const c2 = data1d[i - 2]; // two before
-        // Bullish FVG (upside imbalance): gap between c2.high and c0.low
+        const c0 = data1d[i];
+        const c2 = data1d[i - 2];
+        // Bullish FVG mid — sits ABOVE c2.high, so acts as resistance/TP for bulls
         if (p(c2.high) < p(c0.low)) {
             levels.push({ type: 'Daily FVG ↑', price: (p(c2.high) + p(c0.low)) / 2 });
         }
-        // Bearish FVG (downside imbalance): gap between c2.low and c0.high
+        // Bearish FVG mid — sits BELOW c2.low, so acts as support/TP for bears
         if (p(c2.low) > p(c0.high)) {
             levels.push({ type: 'Daily FVG ↓', price: (p(c2.low) + p(c0.high)) / 2 });
         }
     }
 
-    // ── Daily OBs ────────────────────────────────────────────────────────
+    // ── Daily OBs ───────────────────────────────────────────────────────────
     for (let i = 1; i < data1d.length; i++) {
         const c    = data1d[i];
         const prev = data1d[i - 1];
-        // Demand OB: last red candle immediately before a bullish move
-        if (p(c.close) > p(c.open) && p(prev.close) < p(prev.open)) {
-            levels.push({ type: 'Daily OB ↑', price: p(prev.high) });
-        }
-        // Supply OB: last green candle immediately before a bearish move
+        // Supply OB (bearish): last GREEN candle before a down move → its LOW is resistance
+        // Price previously rose FROM this OB, so it acts as a ceiling when revisited.
+        // → Valid TP for a BULLISH trade (price targets this supply zone above)
         if (p(c.close) < p(c.open) && p(prev.close) > p(prev.open)) {
-            levels.push({ type: 'Daily OB ↓', price: p(prev.low) });
+            levels.push({ type: 'Daily Supply OB', price: p(prev.low) });
+        }
+        // Demand OB (bullish): last RED candle before an up move → its HIGH is support
+        // Price previously fell FROM this OB, so it acts as a floor when revisited.
+        // → Valid TP for a BEARISH trade (price targets this demand zone below)
+        if (p(c.close) > p(c.open) && p(prev.close) < p(prev.open)) {
+            levels.push({ type: 'Daily Demand OB', price: p(prev.high) });
         }
     }
 
-    // ── Daily confirmed Swing Highs / Lows (2-bar each side) ─────────────
+    // ── Daily confirmed Swing Highs / Lows (2-bar each side) ────────────────
     for (let i = 2; i < data1d.length - 2; i++) {
         const h = p(data1d[i].high);
         if (
@@ -234,13 +246,15 @@ function findDailyTP(data4h, data1d, direction, entryPrice) {
     }
 
     if (direction === 'BULLISH') {
-        const above = levels.filter(l => l.price > entryPrice);
+        // Target levels that are ABOVE entry by at least minDist
+        const above = levels.filter(l => l.price > entryPrice + minDist);
         if (above.length > 0) {
             const nearest = above.reduce((a, b) => a.price < b.price ? a : b);
             return { level: nearest.price, source: nearest.type };
         }
     } else {
-        const below = levels.filter(l => l.price < entryPrice);
+        // Target levels that are BELOW entry by at least minDist
+        const below = levels.filter(l => l.price < entryPrice - minDist);
         if (below.length > 0) {
             const nearest = below.reduce((a, b) => a.price > b.price ? a : b);
             return { level: nearest.price, source: nearest.type };
@@ -370,15 +384,18 @@ function detect1HEntry(data1h, sweepState) {
 
     // ── Step D: Compute entry price and stop loss ──────────────────────────
     let entryPrice, slPrice;
+    // SL buffer = 10 pips below/above the sweep extreme
+    // This gives a fixed, reliable clearance regardless of candle size.
+    const slBuffer = 10 * getPipSize(sweepState.symbol || 'DEFAULT');
     if (direction === 'BULLISH') {
-        // For OB: enter at the top of the OB zone. For FVG: enter at the midpoint.
+        // For OB/BB: enter at the top of the zone. For FVG: enter at the midpoint.
         entryPrice = poi.type === 'FVG' ? poi.midpoint : poi.high;
-        // SL = just below the sweep extreme
-        slPrice = sweepExtreme - (p(data1h[afterSweepIdx].high) - p(data1h[afterSweepIdx].low)) * 0.1;
+        // SL = 10 pips below the sweep extreme (the liquidity grab low)
+        slPrice = sweepExtreme - slBuffer;
     } else {
         entryPrice = poi.type === 'FVG' ? poi.midpoint : poi.low;
-        // SL = just above the sweep extreme
-        slPrice = sweepExtreme + (p(data1h[afterSweepIdx].high) - p(data1h[afterSweepIdx].low)) * 0.1;
+        // SL = 10 pips above the sweep extreme (the liquidity grab high)
+        slPrice = sweepExtreme + slBuffer;
     }
 
     // ── Step E: POI Retest check ───────────────────────────────────────────
@@ -429,7 +446,7 @@ async function crt4_scan1H(symbol, sweepState) {
     const data1h = await fetchTV(symbol, '1h', 200);
     if (!data1h || data1h.length < 10) return null;
     data1h.sort((a, b) => a.timestamp - b.timestamp);
-    const normalised = { ...sweepState, sweepTimestamp: sweepState.sweepTimestamp || sweepState.confirmingTs };
+    const normalised = { ...sweepState, sweepTimestamp: sweepState.sweepTimestamp || sweepState.confirmingTs, symbol };
     return detect1HEntry(data1h, normalised);
 }
 
@@ -445,7 +462,7 @@ async function crt4_findTP(symbol, entryResult) {
     if (!data4h || !data1d || data4h.length < 10 || data1d.length < 5) return null;
     data4h.sort((a, b) => a.timestamp - b.timestamp);
     data1d.sort((a, b) => a.timestamp - b.timestamp);
-    return findDailyTP(data4h, data1d, entryResult.direction, entryResult.entryPrice);
+    return findDailyTP(data4h, data1d, entryResult.direction, entryResult.entryPrice, symbol);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -506,7 +523,7 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             // Track which 1H candle triggered the POI retest (last in slice when entryResult fired)
             let entryResult = null;
             let retestCandle = null;
-            const sweepStateForEntry = { ...sweep, sweepTimestamp: sweep.confirmingTs };
+            const sweepStateForEntry = { ...sweep, sweepTimestamp: sweep.confirmingTs, symbol };
 
             for (let h = 6; h <= relevantHours.length; h++) {
                 const slice1h = raw1h.filter(c => c.timestamp <= relevantHours[h - 1].timestamp);
@@ -525,7 +542,7 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             // Find TP = nearest Daily key level above/below entry
             const slice4hForTP = raw4h.slice(0, i + 1);
             const slice1dForTP = raw1d.filter(c => c.timestamp <= c4h.timestamp);
-            const tpResult = findDailyTP(slice4hForTP, slice1dForTP, entryResult.direction, entryResult.entryPrice);
+            const tpResult = findDailyTP(slice4hForTP, slice1dForTP, entryResult.direction, entryResult.entryPrice, symbol);
 
             const sl = entryResult.slPrice;
             const tp = tpResult ? tpResult.level : null;
