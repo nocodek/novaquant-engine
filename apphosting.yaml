@@ -1,0 +1,10 @@
+runConfig:
+  # Keep 1 instance ALWAYS running so node-cron jobs never die.
+  # Without this, Cloud Run scales to zero on no traffic and kills all cron jobs.
+  minInstances: 1
+
+  # Allow enough concurrency and memory for the scanner + data fetching
+  concurrency: 80
+  memoryMiB: 512
+  cpu: 1
+  timeoutSeconds: 60

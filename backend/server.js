@@ -176,4 +176,24 @@ const getSettings = async () => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   startCronJobs(getSettings);
+
+  // ─── Self-ping keepalive ────────────────────────────────────────────────
+  // Cloud Run can still restart instances even with minInstances:1.
+  // This pings /api/status every 4 minutes so the process confirms liveness
+  // and the cron jobs stay registered. Uses http (internal loopback, no TLS).
+  const http = require('http');
+  const PING_INTERVAL_MS = 4 * 60 * 1000; // 4 minutes
+
+  setInterval(() => {
+    const req = http.get(`http://localhost:${PORT}/api/status`, (res) => {
+      // Drain the response so the socket closes cleanly
+      res.resume();
+    });
+    req.on('error', (err) => {
+      console.warn('[Keepalive] Self-ping failed:', err.message);
+    });
+    req.end();
+  }, PING_INTERVAL_MS);
+
+  console.log(`[Keepalive] Self-ping scheduled every ${PING_INTERVAL_MS / 60000} min.`);
 });
