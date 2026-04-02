@@ -10,53 +10,6 @@ function getBot() {
   return null;
 }
 
-async function sendSignal(pair, timeframe, idm, type, entry) {
-  const creds = getBot();
-  const action = type.includes('BUY') ? 'BUY' : 'SELL';
-  const message = `🚨 *[LIVE MTF SIGNAL]*\n\n🔹 *Pair*: ${pair}\n⏱ *Timeframe*: ${timeframe}\n👀 *Action*: ${action}\n🧲 *Inducement Level*: ${idm}\n🎯 *Nearest OB/BB Level*: ${entry}\n\n_Review the ${timeframe} chart for execution._`;
-  
-  if (creds) {
-    try {
-      await creds.bot.sendMessage(creds.chatId, message, { parse_mode: "Markdown" });
-      logger.success(`Alert sent for ${pair} on ${timeframe}`);
-    } catch (error) {
-      logger.error(`Failed to send message: ${error.message}`);
-    }
-  } else {
-    logger.warn(`Signal not sent because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing from environment secrets: ${message.replace(/\*/g, '').replace(/_/g, '')}`);
-  }
-}
-
-
-async function sendBacktestReport(symbol, results) {
-  const creds = getBot();
-  if (!creds) {
-      throw new Error("Telegram environment variables (TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID) are missing from the server secrets.");
-  }
-
-  let successCount = 0;
-  
-  for (const [interval, data] of Object.entries(results)) {
-    if (data.error || !data.recent || data.recent.length === 0) continue;
-    
-    for (const setup of data.recent) {
-      const action = setup.type.includes('BUY') ? 'BUY' : 'SELL';
-      const message = `🔔 *[MTF Historical]*\n\n🔹 *Pair*: ${symbol}\n⏱ *Timeframe*: ${interval}\n📅 *Date*: ${setup.datetime}\n👀 *Action*: ${action}\n🧲 *Inducement Level*: ${setup.idm}\n🎯 *Nearest OB/BB Level*: ${setup.entry}\n🔰 *Outcome*: ${setup.outcome}\n\n_Review the ${interval} chart for validation._`;
-      
-      try {
-        await creds.bot.sendMessage(creds.chatId, message, { parse_mode: "Markdown" });
-        successCount++;
-        // Space out the payloads to prevent Telegram rate limit issues
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (error) {
-        throw new Error("[Telegram Error] Failed to send history signal: " + error.message);
-      }
-    }
-  }
-  
-  return true;
-}
-
 async function sendCRT4Signal(pair, action, entry, sl, tp, tpSource, poiType, bosLevel, sweepLevel) {
   const creds = getBot();
   const emoji = action === 'BUY' ? '🟢' : '🔴';
@@ -90,4 +43,46 @@ async function sendCRT4Signal(pair, action, entry, sl, tp, tpSource, poiType, bo
   }
 }
 
-module.exports = { sendSignal, sendBacktestReport, sendCRT4Signal };
+async function sendCRT4BacktestReport(symbol, crt4Result) {
+  const creds = getBot();
+  if (!creds) {
+    throw new Error('Telegram environment variables (TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID) are missing.');
+  }
+
+  const setups = (crt4Result.recent || []).slice(0, 3);
+  if (setups.length === 0) return true;
+
+  for (const setup of setups) {
+    const emoji = setup.type.includes('BUY') ? '🟢' : '🔴';
+    const outcomeEmoji = setup.outcome === 'Win' ? '✅' : setup.outcome === 'Loss' ? '❌' : '⏳';
+    const message = [
+      `🔔 *[CRT4 Historical]*`,
+      ``,
+      `🔹 *Pair*: ${symbol}`,
+      `📅 *Date*: ${setup.datetime}`,
+      `${emoji} *Direction*: ${setup.type.includes('BUY') ? 'BUY' : 'SELL'}`,
+      ``,
+      `📊 *Setup:*`,
+      `  ↳ 4H Sweep: \`${setup.sweepLevel}\``,
+      `  ↳ 1H BOS: \`${setup.bosLevel}\``,
+      `  ↳ POI: *${setup.poiType}*`,
+      ``,
+      `🎯 *Entry*: \`${setup.entry}\``,
+      `🛡️ *SL*: \`${setup.sl}\``,
+      `🏁 *TP*: \`${setup.tp}\` _(${setup.tpSource})_`,
+      ``,
+      `${outcomeEmoji} *Outcome*: ${setup.outcome}`
+    ].join('\n');
+
+    try {
+      await creds.bot.sendMessage(creds.chatId, message, { parse_mode: 'Markdown' });
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error) {
+      throw new Error('[Telegram Error] Failed to send CRT4 history: ' + error.message);
+    }
+  }
+
+  return true;
+}
+
+module.exports = { sendCRT4Signal, sendCRT4BacktestReport };

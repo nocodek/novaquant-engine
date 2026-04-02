@@ -91,10 +91,7 @@ app.get('/api/logs', verifyAuth, async (req, res) => {
 app.post('/api/settings', verifyAuth, async (req, res) => {
   try {
     const docRef = db.collection('users').doc(req.user.uid);
-    // Merge new settings with existing ones
     await docRef.set(req.body, { merge: true });
-    
-    // Fetch updated settings to return
     const updatedDoc = await docRef.get();
     res.json({ success: true, activeSettings: updatedDoc.data() });
   } catch (err) {
@@ -102,60 +99,43 @@ app.post('/api/settings', verifyAuth, async (req, res) => {
   }
 });
 
-
-
-const { runBacktestData } = require('./backtest-api');
+// ─── CRT4 Backtester ────────────────────────────────────────────────────────
 const { runCRT4Backtest } = require('./strategy-crt4');
+const { sendCRT4BacktestReport } = require('./telegram');
 
 app.post('/api/backtest', verifyAuth, async (req, res) => {
   const { symbol, startDate, endDate } = req.body;
-  if (!symbol || !startDate || !endDate) return res.status(400).json({ error: "Missing parameters" });
+  if (!symbol || !startDate || !endDate) return res.status(400).json({ error: 'Missing parameters' });
   try {
-    // Run MTF and CRT4 in parallel
-    const [resultsMTF, resultsCRT4] = await Promise.all([
-      runBacktestData(symbol, startDate, endDate),
-      runCRT4Backtest(symbol, startDate, endDate)
-    ]);
-    
-    if (resultsMTF.error) {
-      return res.json({ success: false, error: resultsMTF.error });
-    }
-    
-    // Merge results
-    const combinedResults = { ...resultsMTF };
-    if (!resultsCRT4.error) {
-       combinedResults["CRT4"] = resultsCRT4;
-    }
-    
-    res.json({ success: true, symbol, data: combinedResults });
-  } catch(e) {
+    const result = await runCRT4Backtest(symbol, startDate, endDate);
+    if (result.error) return res.json({ success: false, error: result.error });
+    res.json({ success: true, symbol, data: { CRT4: result } });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
-const { sendBacktestReport } = require('./telegram');
 
 app.post('/api/telegram-backtest', verifyAuth, async (req, res) => {
   const { symbol, results } = req.body;
-  if (!symbol || !results) return res.status(400).json({ error: "Missing data" });
+  if (!symbol || !results) return res.status(400).json({ error: 'Missing data' });
   try {
-    const success = await sendBacktestReport(symbol, results);
+    // results.CRT4.recent holds the last N setups
+    const crt4Data = results.CRT4 || results;
+    const success = await sendCRT4BacktestReport(symbol, crt4Data);
     res.json({ success });
-  } catch(e) {
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Provide an accessor so the global scanner can get an aggregated list of unique pairs across all users
+// ─── Settings accessor for global scanner ───────────────────────────────────
 const getSettings = async () => {
   try {
     const snapshot = await db.collection('users').get();
     const allCrypto = new Set();
     const allForex = new Set();
     
-    if (snapshot.empty) {
-      return defaultSettings;
-    }
+    if (snapshot.empty) return defaultSettings;
     
     snapshot.forEach(doc => {
       const data = doc.data();
@@ -178,15 +158,11 @@ app.listen(PORT, () => {
   startCronJobs(getSettings);
 
   // ─── Self-ping keepalive ────────────────────────────────────────────────
-  // Cloud Run can still restart instances even with minInstances:1.
-  // This pings /api/status every 4 minutes so the process confirms liveness
-  // and the cron jobs stay registered. Uses http (internal loopback, no TLS).
   const http = require('http');
-  const PING_INTERVAL_MS = 4 * 60 * 1000; // 4 minutes
+  const PING_INTERVAL_MS = 4 * 60 * 1000;
 
   setInterval(() => {
     const req = http.get(`http://localhost:${PORT}/api/status`, (res) => {
-      // Drain the response so the socket closes cleanly
       res.resume();
     });
     req.on('error', (err) => {
