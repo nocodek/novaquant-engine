@@ -281,14 +281,32 @@ backtestForm.addEventListener('submit', async (e) => {
                outputHTML += `<div style="margin-top:10px; font-size:0.85rem; border-left:2px solid var(--accent); padding-left:10px;">`;
                result.recent.slice(0, 3).forEach(setup => {
                    const outcomeColor = setup.outcome === 'Win' ? 'var(--success)' : (setup.outcome === 'Loss' ? 'var(--danger)' : 'var(--text-muted)');
-                   const action = setup.type.includes('BUY') ? 'BUY' : 'SELL';
-                   outputHTML += `<div style="margin-bottom:8px;">
-                       <strong style="color:var(--text-main);">${setup.datetime} (UTC+1 Lagos)</strong> - 👀 Action: <strong style="color:var(--accent);">${action}</strong><br>
-                      ${setup.context ? `📍 Context: ${setup.context} <br>` : `🧲 Inducement Level: ${setup.idm || 'N/A'} <br>`}
-                      ${setup.sl ? `🛡️ Stop Loss: ${setup.sl} <br>` : ''}
-                      🎯 ${setup.context ? 'Entry Trigger' : 'Nearest OB/BB Level'}: ${setup.entry} <br>
-                      ➔ Outcome: <strong style="color:${outcomeColor}">${setup.outcome}</strong>
-                   </div>`;
+                   const actionLabel = setup.type.includes('BUY') ? 'BUY 🟢' : 'SELL 🔴';
+                   const isCRT4 = !!setup.sweepLevel;
+
+                   if (isCRT4) {
+                       outputHTML += `<div style="margin-bottom:10px; padding:8px; background:rgba(255,255,255,0.04); border-radius:6px; border-left:3px solid var(--accent);">
+                           <strong style="color:var(--text-main);">${setup.datetime} (WAT)</strong> &mdash; <strong style="color:var(--accent);">${actionLabel}</strong><br>
+                           <span style="color:var(--text-muted); font-size:0.8rem;">${setup.context}</span>
+                           <div style="margin-top:6px; display:grid; grid-template-columns:1fr 1fr; gap:3px 14px; font-size:0.82rem;">
+                               <span>📍 <b>Sweep:</b> ${setup.sweepLevel}</span>
+                               <span>🔓 <b>BOS:</b> ${setup.bosLevel}</span>
+                               <span>🧲 <b>POI:</b> ${setup.poiType}</span>
+                               <span>🎯 <b>Entry:</b> ${setup.entry}</span>
+                               <span>🛡️ <b>SL:</b> <span style="color:var(--danger);">${setup.sl}</span></span>
+                               <span>🏁 <b>TP:</b> <span style="color:var(--success);">${setup.tp}</span> <span style="color:var(--text-muted);font-size:0.75rem;">(${setup.tpSource})</span></span>
+                           </div>
+                           <div style="margin-top:5px;">➔ Outcome: <strong style="color:${outcomeColor};">${setup.outcome}</strong></div>
+                       </div>`;
+                   } else {
+                       outputHTML += `<div style="margin-bottom:8px;">
+                           <strong style="color:var(--text-main);">${setup.datetime} (UTC+1 Lagos)</strong> - 👀 Action: <strong style="color:var(--accent);">${actionLabel}</strong><br>
+                          ${setup.context ? `📍 Context: ${setup.context} <br>` : `🧲 Inducement: ${setup.idm || 'N/A'} <br>`}
+                          ${setup.sl ? `🛡️ SL: ${setup.sl} <br>` : ''}
+                          🎯 ${setup.context ? 'Entry' : 'Nearest OB/BB'}: ${setup.entry} <br>
+                          ➔ Outcome: <strong style="color:${outcomeColor}">${setup.outcome}</strong>
+                       </div>`;
+                   }
                });
                outputHTML += `</div>`;
            }
