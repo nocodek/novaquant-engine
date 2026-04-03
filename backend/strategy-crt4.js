@@ -207,92 +207,49 @@ function get4HTrend(data4h) {
 }
 
 /**
- * TP = nearest UNMITIGATED Daily key level above entry (BULLISH) or below (BEARISH).
+ * TP = nearest intact 4H liquidity pool / swing macro structure.
  *
- * A level is UNMITIGATED if no subsequent Daily candle has yet traded through it.
- *   - Bull TP (level above price): violated if any later High >= level.
- *   - Bear TP (level below price): violated if any later Low  <= level.
+ * Logic:
+ *   BUY  → next unswept 4H Swing HIGH above entry (sell-side liquidity rests there)
+ *   SELL → next unswept 4H Swing LOW  below entry (buy-side liquidity rests there)
  *
- * Minimum distance = 50 pips — filters micro-levels immediately around entry.
+ * "Unswept" = no subsequent 4H candle within the dataset has yet traded through the level.
+ * Minimum distance = 100 pips from entry to skip structures inside the BOS zone.
  */
-function findDailyTP(data4h, data1d, direction, entryPrice, symbol) {
-    const minDist = 500 * getPipSize(symbol || 'DEFAULT');
+function find4HLiquidityTP(data4h, direction, entryPrice, symbol) {
+    const minDist = 100 * getPipSize(symbol || 'DEFAULT');
     const candidates = [];
 
-    // ── Daily FVGs ──────────────────────────────────────────────────────────
-    for (let i = 2; i < data1d.length; i++) {
-        const c0 = data1d[i];
-        const c2 = data1d[i - 2];
-
-        // Bullish FVG (gap up) — midpoint is resistance; TP for bulls
-        if (p(c2.high) < p(c0.low)) {
-            const lvl = (p(c2.high) + p(c0.low)) / 2;
-            const violated = data1d.slice(i + 1).some(fc => p(fc.high) >= lvl);
-            if (!violated) candidates.push({ type: 'Daily FVG ↑', price: lvl });
-        }
-        // Bearish FVG (gap down) — midpoint is support; TP for bears
-        if (p(c2.low) > p(c0.high)) {
-            const lvl = (p(c2.low) + p(c0.high)) / 2;
-            const violated = data1d.slice(i + 1).some(fc => p(fc.low) <= lvl);
-            if (!violated) candidates.push({ type: 'Daily FVG ↓', price: lvl });
-        }
-    }
-
-    // ── Daily OBs ───────────────────────────────────────────────────────────
-    for (let i = 1; i < data1d.length; i++) {
-        const c    = data1d[i];
-        const prev = data1d[i - 1];
-
-        // Supply OB: last GREEN before bearish move → LOW is resistance → bull TP
-        if (p(c.close) < p(c.open) && p(prev.close) > p(prev.open)) {
-            const lvl = p(prev.low);
-            const violated = data1d.slice(i + 1).some(fc => p(fc.high) >= lvl);
-            if (!violated) candidates.push({ type: 'Daily Supply OB', price: lvl });
+    for (let i = 3; i < data4h.length - 3; i++) {
+        if (direction === 'BULLISH' && is4HSwingHigh(data4h, i, 3)) {
+            const h = p(data4h[i].high);
+            if (h < entryPrice + minDist) continue;
+            // Only intact (unswept) swing highs — no later candle has exceeded this level
+            const swept = data4h.slice(i + 1).some(fc => p(fc.high) > h);
+            if (!swept) candidates.push({ price: h, source: '4H Swing High' });
         }
 
-        // Demand OB: last RED before bullish move → HIGH is support → bear TP
-        if (p(c.close) > p(c.open) && p(prev.close) < p(prev.open)) {
-            const lvl = p(prev.high);
-            const violated = data1d.slice(i + 1).some(fc => p(fc.low) <= lvl);
-            if (!violated) candidates.push({ type: 'Daily Demand OB', price: lvl });
-        }
-    }
-
-    // ── Daily Swing Highs / Lows (2-bar confirmation each side) ─────────────
-    for (let i = 2; i < data1d.length - 2; i++) {
-        const h = p(data1d[i].high);
-        if (
-            p(data1d[i-2].high) < h && p(data1d[i-1].high) < h &&
-            p(data1d[i+1].high) < h && p(data1d[i+2].high) < h
-        ) {
-            const violated = data1d.slice(i + 1).some(fc => p(fc.high) >= h);
-            if (!violated) candidates.push({ type: 'Daily Swing High', price: h });
-        }
-
-        const l = p(data1d[i].low);
-        if (
-            p(data1d[i-2].low) > l && p(data1d[i-1].low) > l &&
-            p(data1d[i+1].low) > l && p(data1d[i+2].low) > l
-        ) {
-            const violated = data1d.slice(i + 1).some(fc => p(fc.low) <= l);
-            if (!violated) candidates.push({ type: 'Daily Swing Low', price: l });
+        if (direction === 'BEARISH' && is4HSwingLow(data4h, i, 3)) {
+            const l = p(data4h[i].low);
+            if (l > entryPrice - minDist) continue;
+            const swept = data4h.slice(i + 1).some(fc => p(fc.low) < l);
+            if (!swept) candidates.push({ price: l, source: '4H Swing Low' });
         }
     }
 
     if (direction === 'BULLISH') {
-        const above = candidates.filter(l => l.price > entryPrice + minDist);
-        if (above.length > 0) {
-            const nearest = above.reduce((a, b) => a.price < b.price ? a : b);
-            return { level: nearest.price, source: nearest.type };
-        }
+        const above = candidates.filter(c => c.price > entryPrice + minDist);
+        if (above.length === 0) return null;
+        // Nearest unswept swing high above entry
+        const nearest = above.reduce((a, b) => a.price < b.price ? a : b);
+        return { level: nearest.price, source: nearest.source };
     } else {
-        const below = candidates.filter(l => l.price < entryPrice - minDist);
-        if (below.length > 0) {
-            const nearest = below.reduce((a, b) => a.price > b.price ? a : b);
-            return { level: nearest.price, source: nearest.type };
-        }
+        const below = candidates.filter(c => c.price < entryPrice - minDist);
+        if (below.length === 0) return null;
+        // Nearest unswept swing low below entry
+        const nearest = below.reduce((a, b) => a.price > b.price ? a : b);
+        return { level: nearest.price, source: nearest.source };
     }
-    return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -502,14 +459,10 @@ async function crt4_scan1H(symbol, sweepState) {
  * Returns { level, source } or null.
  */
 async function crt4_findTP(symbol, entryResult) {
-    const [data4h, data1d] = await Promise.all([
-        fetchTV(symbol, '4h',   100),
-        fetchTV(symbol, '1day', 500)
-    ]);
-    if (!data4h || !data1d || data4h.length < 10 || data1d.length < 5) return null;
+    const data4h = await fetchTV(symbol, '4h', 300);
+    if (!data4h || data4h.length < 10) return null;
     data4h.sort((a, b) => a.timestamp - b.timestamp);
-    data1d.sort((a, b) => a.timestamp - b.timestamp);
-    return findDailyTP(data4h, data1d, entryResult.direction, entryResult.entryPrice, symbol);
+    return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,23 +473,21 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
     try {
         console.log(`[CRT4] Fetching data for backtest: ${symbol}...`);
 
-        const [raw4h, raw1h, raw1d] = await Promise.all([
+        const [raw4h, raw1h] = await Promise.all([
             fetchTV(symbol, '4h', 3000, endDate),
-            fetchTV(symbol, '1h', 8000, endDate),
-            fetchTV(symbol, '1day', 500, endDate)
+            fetchTV(symbol, '1h', 8000, endDate)
         ]);
 
         const startMs = new Date(startDate + 'T00:00:00Z').getTime();
         const endMs   = new Date(endDate   + 'T23:59:59Z').getTime();
 
-        if (raw4h.length < 10 || raw1h.length < 20 || raw1d.length < 10) {
+        if (raw4h.length < 10 || raw1h.length < 20) {
             return { error: 'Insufficient data for CRT4 backtest.' };
         }
 
         // Sort all data ascending (oldest → newest) — TV returns newest first
         raw4h.sort((a, b) => a.timestamp - b.timestamp);
         raw1h.sort((a, b) => a.timestamp - b.timestamp);
-        raw1d.sort((a, b) => a.timestamp - b.timestamp);
 
         const pipSize  = getPipSize(symbol);
         const minRange = 100 * pipSize;   // 100 pips minimum range
@@ -592,12 +543,10 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 
             if (!entryResult || !retestCandle) continue;
 
-            // Find TP = nearest UNMITIGATED Daily key level above/below entry.
-            // Slice 1D data up to the retest candle so mitigation is evaluated
-            // against all history up to the moment of entry (not just the sweep).
+            // Find TP = nearest intact 4H swing high/low (liquidity pool) above/below entry.
+            // Use 4H slice up to the entry candle to avoid lookahead.
             const slice4hForTP = raw4h.slice(0, i + 1);
-            const slice1dForTP = raw1d.filter(c => c.timestamp <= retestCandle.timestamp);
-            const tpResult = findDailyTP(slice4hForTP, slice1dForTP, entryResult.direction, entryResult.entryPrice, symbol);
+            const tpResult = find4HLiquidityTP(slice4hForTP, entryResult.direction, entryResult.entryPrice, symbol);
 
             const sl = entryResult.slPrice;
             const tp = tpResult ? tpResult.level : null;
