@@ -180,32 +180,61 @@ function find1HPOI(data1h, bosIndex, direction, sweepTimestamp) {
 }
 
 /**
- * TP = nearest Daily key level above entry (BULLISH) or below entry (BEARISH).
+ * Compute a simple N-period EMA on an array of close values.
+ */
+function calcEMA(closes, period) {
+    if (closes.length < period) return null;
+    const k = 2 / (period + 1);
+    let ema = closes.slice(0, period).reduce((s, v) => s + v, 0) / period;
+    for (let i = period; i < closes.length; i++) {
+        ema = closes[i] * k + ema * (1 - k);
+    }
+    return ema;
+}
+
+/**
+ * Determine market bias on the 4H timeframe using EMA-50.
+ * Returns 'BULLISH' if last close > EMA-50, 'BEARISH' if below.
+ * Returns null if insufficient data.
+ */
+function get4HTrend(data4h) {
+    if (!data4h || data4h.length < 52) return null;
+    const closes = data4h.map(c => p(c.close));
+    const ema = calcEMA(closes, 50);
+    if (ema === null) return null;
+    const lastClose = closes[closes.length - 1];
+    return lastClose > ema ? 'BULLISH' : 'BEARISH';
+}
+
+/**
+ * TP = nearest UNMITIGATED Daily key level above entry (BULLISH) or below (BEARISH).
  *
- * OB labelling logic:
- *   - Demand OB (bull): last RED candle before a bullish move. Its HIGH is the level.
- *     This zone is BELOW current price — relevant as TP for a BEARISH trade.
- *   - Supply OB (bear): last GREEN candle before a bearish move. Its LOW is the level.
- *     This zone is ABOVE current price — relevant as TP for a BULLISH trade.
+ * A level is UNMITIGATED if no subsequent Daily candle has yet traded through it.
+ *   - Bull TP (level above price): violated if any later High >= level.
+ *   - Bear TP (level below price): violated if any later Low  <= level.
  *
- * Also enforces a minimum distance of 10 pips so we don’t target levels sitting
- * immediately on top of entry (already priced in / inside spread).
+ * Minimum distance = 50 pips — filters micro-levels immediately around entry.
  */
 function findDailyTP(data4h, data1d, direction, entryPrice, symbol) {
-    const minDist = 10 * getPipSize(symbol || 'DEFAULT');
-    const levels  = [];
+    const minDist = 50 * getPipSize(symbol || 'DEFAULT');
+    const candidates = [];
 
-    // ── Daily FVGs ─────────────────────────────────────────────────────────
+    // ── Daily FVGs ──────────────────────────────────────────────────────────
     for (let i = 2; i < data1d.length; i++) {
         const c0 = data1d[i];
         const c2 = data1d[i - 2];
-        // Bullish FVG mid — sits ABOVE c2.high, so acts as resistance/TP for bulls
+
+        // Bullish FVG (gap up) — midpoint is resistance; TP for bulls
         if (p(c2.high) < p(c0.low)) {
-            levels.push({ type: 'Daily FVG ↑', price: (p(c2.high) + p(c0.low)) / 2 });
+            const lvl = (p(c2.high) + p(c0.low)) / 2;
+            const violated = data1d.slice(i + 1).some(fc => p(fc.high) >= lvl);
+            if (!violated) candidates.push({ type: 'Daily FVG ↑', price: lvl });
         }
-        // Bearish FVG mid — sits BELOW c2.low, so acts as support/TP for bears
+        // Bearish FVG (gap down) — midpoint is support; TP for bears
         if (p(c2.low) > p(c0.high)) {
-            levels.push({ type: 'Daily FVG ↓', price: (p(c2.low) + p(c0.high)) / 2 });
+            const lvl = (p(c2.low) + p(c0.high)) / 2;
+            const violated = data1d.slice(i + 1).some(fc => p(fc.low) <= lvl);
+            if (!violated) candidates.push({ type: 'Daily FVG ↓', price: lvl });
         }
     }
 
@@ -213,48 +242,51 @@ function findDailyTP(data4h, data1d, direction, entryPrice, symbol) {
     for (let i = 1; i < data1d.length; i++) {
         const c    = data1d[i];
         const prev = data1d[i - 1];
-        // Supply OB (bearish): last GREEN candle before a down move → its LOW is resistance
-        // Price previously rose FROM this OB, so it acts as a ceiling when revisited.
-        // → Valid TP for a BULLISH trade (price targets this supply zone above)
+
+        // Supply OB: last GREEN before bearish move → LOW is resistance → bull TP
         if (p(c.close) < p(c.open) && p(prev.close) > p(prev.open)) {
-            levels.push({ type: 'Daily Supply OB', price: p(prev.low) });
+            const lvl = p(prev.low);
+            const violated = data1d.slice(i + 1).some(fc => p(fc.high) >= lvl);
+            if (!violated) candidates.push({ type: 'Daily Supply OB', price: lvl });
         }
-        // Demand OB (bullish): last RED candle before an up move → its HIGH is support
-        // Price previously fell FROM this OB, so it acts as a floor when revisited.
-        // → Valid TP for a BEARISH trade (price targets this demand zone below)
+
+        // Demand OB: last RED before bullish move → HIGH is support → bear TP
         if (p(c.close) > p(c.open) && p(prev.close) < p(prev.open)) {
-            levels.push({ type: 'Daily Demand OB', price: p(prev.high) });
+            const lvl = p(prev.high);
+            const violated = data1d.slice(i + 1).some(fc => p(fc.low) <= lvl);
+            if (!violated) candidates.push({ type: 'Daily Demand OB', price: lvl });
         }
     }
 
-    // ── Daily confirmed Swing Highs / Lows (2-bar each side) ────────────────
+    // ── Daily Swing Highs / Lows (2-bar confirmation each side) ─────────────
     for (let i = 2; i < data1d.length - 2; i++) {
         const h = p(data1d[i].high);
         if (
             p(data1d[i-2].high) < h && p(data1d[i-1].high) < h &&
             p(data1d[i+1].high) < h && p(data1d[i+2].high) < h
         ) {
-            levels.push({ type: 'Daily Swing High', price: h });
+            const violated = data1d.slice(i + 1).some(fc => p(fc.high) >= h);
+            if (!violated) candidates.push({ type: 'Daily Swing High', price: h });
         }
+
         const l = p(data1d[i].low);
         if (
             p(data1d[i-2].low) > l && p(data1d[i-1].low) > l &&
             p(data1d[i+1].low) > l && p(data1d[i+2].low) > l
         ) {
-            levels.push({ type: 'Daily Swing Low', price: l });
+            const violated = data1d.slice(i + 1).some(fc => p(fc.low) <= l);
+            if (!violated) candidates.push({ type: 'Daily Swing Low', price: l });
         }
     }
 
     if (direction === 'BULLISH') {
-        // Target levels that are ABOVE entry by at least minDist
-        const above = levels.filter(l => l.price > entryPrice + minDist);
+        const above = candidates.filter(l => l.price > entryPrice + minDist);
         if (above.length > 0) {
             const nearest = above.reduce((a, b) => a.price < b.price ? a : b);
             return { level: nearest.price, source: nearest.type };
         }
     } else {
-        // Target levels that are BELOW entry by at least minDist
-        const below = levels.filter(l => l.price < entryPrice - minDist);
+        const below = candidates.filter(l => l.price < entryPrice - minDist);
         if (below.length > 0) {
             const nearest = below.reduce((a, b) => a.price > b.price ? a : b);
             return { level: nearest.price, source: nearest.type };
@@ -431,11 +463,26 @@ function detect1HEntry(data1h, sweepState) {
  * Returns sweep state object or null.
  */
 async function crt4_scan4H(symbol) {
-    const data4h = await fetchTV(symbol, '4h', 50);
-    if (!data4h || data4h.length < 5) return null;
+    const data4h = await fetchTV(symbol, '4h', 100);
+    if (!data4h || data4h.length < 55) return null;
     data4h.sort((a, b) => a.timestamp - b.timestamp);
+
+    // ── Market bias filter (EMA-50 on 4H) ───────────────────────────────────
+    const trend = get4HTrend(data4h);
+
     const minRange = 100 * getPipSize(symbol);
-    return detect4HSweep(data4h, minRange);
+    const sweep = detect4HSweep(data4h, minRange);
+    if (!sweep) return null;
+
+    // Only pass sweeps that align with the 4H trend:
+    // Bullish sweep (low sweep → expect rally) only valid in uptrend.
+    // Bearish sweep (high sweep → expect drop) only valid in downtrend.
+    if (trend && sweep.direction !== trend) {
+        console.log(`[CRT4] ${symbol} sweep direction ${sweep.direction} filtered — 4H trend is ${trend}`);
+        return null;
+    }
+
+    return sweep;
 }
 
 /**
@@ -510,6 +557,12 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 
             if (!sweep) continue;
 
+            // ── Market bias filter: require sweep direction to match 4H trend ──
+            // Use at least 52 candles of context before the sweep for EMA-50.
+            const trendSlice = raw4h.slice(0, i + 1);
+            const trend = get4HTrend(trendSlice);
+            if (trend && sweep.direction !== trend) continue; // against the trend — skip
+
             // Skip if we've already handled this exact sweep candle
             if (processedSweeps.has(sweep.confirmingTs)) continue;
             processedSweeps.add(sweep.confirmingTs);
@@ -539,9 +592,11 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 
             if (!entryResult || !retestCandle) continue;
 
-            // Find TP = nearest Daily key level above/below entry
+            // Find TP = nearest UNMITIGATED Daily key level above/below entry.
+            // Slice 1D data up to the retest candle so mitigation is evaluated
+            // against all history up to the moment of entry (not just the sweep).
             const slice4hForTP = raw4h.slice(0, i + 1);
-            const slice1dForTP = raw1d.filter(c => c.timestamp <= c4h.timestamp);
+            const slice1dForTP = raw1d.filter(c => c.timestamp <= retestCandle.timestamp);
             const tpResult = findDailyTP(slice4hForTP, slice1dForTP, entryResult.direction, entryResult.entryPrice, symbol);
 
             const sl = entryResult.slPrice;
