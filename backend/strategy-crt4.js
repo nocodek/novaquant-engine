@@ -216,7 +216,7 @@ function get4HTrend(data4h) {
  * Minimum distance = 50 pips — filters micro-levels immediately around entry.
  */
 function findDailyTP(data4h, data1d, direction, entryPrice, symbol) {
-    const minDist = 50 * getPipSize(symbol || 'DEFAULT');
+    const minDist = 500 * getPipSize(symbol || 'DEFAULT');
     const candidates = [];
 
     // ── Daily FVGs ──────────────────────────────────────────────────────────
