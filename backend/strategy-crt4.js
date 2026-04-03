@@ -504,7 +504,7 @@ async function crt4_scan1H(symbol, sweepState) {
 async function crt4_findTP(symbol, entryResult) {
     const [data4h, data1d] = await Promise.all([
         fetchTV(symbol, '4h',   100),
-        fetchTV(symbol, '1day', 200)
+        fetchTV(symbol, '1day', 500)
     ]);
     if (!data4h || !data1d || data4h.length < 10 || data1d.length < 5) return null;
     data4h.sort((a, b) => a.timestamp - b.timestamp);
@@ -608,7 +608,7 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             let resolutionTs = null;
             const postRetestCandles = raw1h.filter(c => c.timestamp >= retestCandle.timestamp && c.timestamp <= endMs);
 
-            for (let k = 0; k < Math.min(postRetestCandles.length, 300); k++) {
+            for (let k = 0; k < Math.min(postRetestCandles.length, 600); k++) {
                 const fh = p(postRetestCandles[k].high);
                 const fl = p(postRetestCandles[k].low);
 
