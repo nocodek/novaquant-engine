@@ -106,6 +106,11 @@ function findFirstBOSCandle(data1h, startIdx, direction, bosLevel) {
  * Find the 1H POI (OB / FVG) to enter on after BOS.
  * Scans backwards from the BOS candle toward the sweep.
  *
+ * QUALITY FILTER: Breaker Blocks (BB) are EXCLUDED.
+ * A BB is a zone that was already tested and failed — price has already
+ * used that level once, making it significantly less reliable than a fresh OB or FVG.
+ * Backtest data showed 0% win rate on BB entries vs 33%+ on OB/FVG.
+ *
  * For BULLISH (expecting price to retrace DOWN into OB/FVG before going up):
  *   - OB: last BEARISH (red) 1H candle before the impulse that broke structure
  *   - FVG: 3-candle gap where candle[n+2].low > candle[n].high (bullish FVG above)
@@ -143,22 +148,20 @@ function find1HPOI(data1h, bosIndex, direction, sweepTimestamp) {
             }
         }
 
-        // ── OB / Breaker Block check ─────────────────────────────────────
-        // An opposing candle is an OB if price passed straight through it,
-        // or a BB (Breaker Block) if the impulse candles after it also
-        // violated its extreme before the BOS — confirming the zone was "broken".
+        // ── OB check (Breaker Blocks excluded — 0% WR in backtests) ─────
+        // An opposing candle is an OB if price passed straight through it.
+        // If that candle's extreme was violated before BOS (BB) — skip it.
         const isBearCandle = p(c.close) < p(c.open);
         const isBullCandle = p(c.close) > p(c.open);
 
         if (direction === 'BULLISH' && isBearCandle) {
-            // Check if any candle between this OB and the BOS violated its LOW
-            // (i.e. price dipped back below the candle's low) → that makes it a BB
             let wasBroken = false;
             for (let k = j + 1; k <= bosIndex; k++) {
                 if (p(data1h[k].low) < p(c.low)) { wasBroken = true; break; }
             }
+            if (wasBroken) continue; // BB — skip, keep looking for a fresh OB or FVG
             return {
-                type: wasBroken ? 'BB' : 'OB',
+                type: 'OB',
                 high: p(c.high), low: p(c.low),
                 midpoint: (p(c.high) + p(c.low)) / 2
             };
@@ -169,8 +172,9 @@ function find1HPOI(data1h, bosIndex, direction, sweepTimestamp) {
             for (let k = j + 1; k <= bosIndex; k++) {
                 if (p(data1h[k].high) > p(c.high)) { wasBroken = true; break; }
             }
+            if (wasBroken) continue; // BB — skip
             return {
-                type: wasBroken ? 'BB' : 'OB',
+                type: 'OB',
                 high: p(c.high), low: p(c.low),
                 midpoint: (p(c.high) + p(c.low)) / 2
             };
@@ -211,8 +215,11 @@ function getDailyTrend(dataD) {
 
     const lastClose = closes[closes.length - 1];
 
+    // Neutral zone: EMAs within 1% of each other = ranging market.
+    // Use stricter 1% (up from 0.5%) — when EMAs are this close, the market
+    // is consolidating and both bull/bear setups fail at high rates.
     const emaDiffPct = Math.abs(ema50 - ema200) / ema200;
-    if (emaDiffPct < 0.005) return null; // within 0.5% → indeterminate
+    if (emaDiffPct < 0.01) return null; // within 1% → indeterminate, skip ALL setups
 
     if (lastClose > ema50 && lastClose > ema200) return 'BULLISH';
     if (lastClose < ema50 && lastClose < ema200) return 'BEARISH';
@@ -432,8 +439,13 @@ function detect1HEntry(data1h, sweepState) {
     // ── Step D: Compute entry price and stop loss ──────────────────────────
     let entryPrice, slPrice;
     // SL buffer = 10 pips below/above the sweep extreme
-    // This gives a fixed, reliable clearance regardless of candle size.
-    const slBuffer = 10 * getPipSize(sweepState.symbol || 'DEFAULT');
+    const slBuffer  = 10 * getPipSize(sweepState.symbol || 'DEFAULT');
+    // Minimum SL distance: 30 pips for JPY pairs, 20 pips for others
+    // Prevents noise-level stops that get hit by random 1H wick fluctuations
+    const pip       = getPipSize(sweepState.symbol || 'DEFAULT');
+    const minSLPips = /JPY/i.test(sweepState.symbol || '') ? 30 : 20;
+    const minSLDist = minSLPips * pip;
+
     if (direction === 'BULLISH') {
         // For OB/BB: enter at the top of the zone. For FVG: enter at the midpoint.
         entryPrice = poi.type === 'FVG' ? poi.midpoint : poi.high;
@@ -444,6 +456,10 @@ function detect1HEntry(data1h, sweepState) {
         // SL = 10 pips above the sweep extreme (the liquidity grab high)
         slPrice = sweepExtreme + slBuffer;
     }
+
+    // Enforce minimum SL distance — skip if stop is too tight (noise)
+    const slDist = Math.abs(entryPrice - slPrice);
+    if (slDist < minSLDist) return null;
 
     // ── Step E: POI Retest check ───────────────────────────────────────────
     // Only fire the signal when price has PULLED BACK INTO the POI zone.
@@ -678,6 +694,14 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 
             const sl = entryResult.slPrice;
             const tp = tpResult ? tpResult.level : null;
+
+            // Minimum R:R = 1.5:1 — skip if TP doesn't justify the risk
+            // e.g. Feb 26 BUY: R:R = 1.19 → not worth it
+            if (tp) {
+                const slDist = Math.abs(entryResult.entryPrice - sl);
+                const tpDist = Math.abs(tp - entryResult.entryPrice);
+                if (tpDist / slDist < 1.5) continue;
+            }
 
             // Evaluate outcome from the retest candle using entry-TF (or finer) candles
             let outcome = 'Pending';
