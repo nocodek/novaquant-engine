@@ -695,13 +695,14 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             const sl = entryResult.slPrice;
             const tp = tpResult ? tpResult.level : null;
 
+            // Skip setups that have no valid Take Profit structure
+            if (!tp) continue;
+
             // Minimum R:R = 1.5:1 — skip if TP doesn't justify the risk
             // e.g. Feb 26 BUY: R:R = 1.19 → not worth it
-            if (tp) {
-                const slDist = Math.abs(entryResult.entryPrice - sl);
-                const tpDist = Math.abs(tp - entryResult.entryPrice);
-                if (tpDist / slDist < 1.5) continue;
-            }
+            const slDist = Math.abs(entryResult.entryPrice - sl);
+            const tpDist = Math.abs(tp - entryResult.entryPrice);
+            if (tpDist / slDist < 1.5) continue;
 
             // Evaluate outcome from the retest candle using entry-TF (or finer) candles
             let outcome = 'Pending';
