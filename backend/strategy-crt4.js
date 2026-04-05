@@ -484,46 +484,60 @@ function isXAUUSD(symbol) {
 }
 
 /**
+ * Returns true only for Crypto pairs (route to Daily+4H+Weekly).
+ * Forex pairs (including XAUUSD/XAGUSD) all use 4H+1H+4H.
+ */
+function isCrypto(symbol) {
+    return /BTC|ETH|SOL|XRP|ADA|DOGE|BNB|MATIC|AVAX/i.test(symbol);
+}
+
+/**
  * Phase 1: Detect CRT sweep.
- * ─ XAUUSD            : scans 4H candles (original calibrated setup, 83% WR).
- * ─ All other symbols : scans Daily candles (larger structural sweeps).
+ * ─ Crypto           : scans Daily candles (larger structural sweeps).
+ * ─ Forex + Gold     : scans 4H candles (original calibrated setup).
  * Returns sweep state object or null.
  */
 async function crt4_scanDaily(symbol) {
-    const isGold = isXAUUSD(symbol);
+    const crypto = isCrypto(symbol);
 
-    if (isGold) {
-        // ── XAUUSD: original 4H sweep + EMA-50/200 on 4H ───────────
-        const data4h = await fetchTV(symbol, '4h', 300);
-        if (!data4h || data4h.length < 55) return null;
-        data4h.sort((a, b) => a.timestamp - b.timestamp);
+    if (crypto) {
+        // ── Crypto: Daily sweep + EMA-50/200 on Daily ─────────────────
+        const dataD = await fetchTV(symbol, '1D', 300);
+        if (!dataD || dataD.length < 55) return null;
+        dataD.sort((a, b) => a.timestamp - b.timestamp);
 
-        const trend = getDailyTrend(data4h); // EMA logic is TF-agnostic
+        const trend = getDailyTrend(dataD);
         const minRange = 100 * getPipSize(symbol);
-        const sweep = detect4HSweep(data4h, minRange);
+        const sweep = detect4HSweep(dataD, minRange);
         if (!sweep) return null;
-        if (trend && sweep.direction !== trend) return null;
-        if (isTrendOverExtended(data4h, sweep.direction, 20, 0.08)) return null;
+        if (trend && sweep.direction !== trend) {
+            console.log(`[CRT4] ${symbol} daily sweep ${sweep.direction} filtered — Daily trend is ${trend}`);
+            return null;
+        }
+        if (isTrendOverExtended(dataD, sweep.direction, 10, 0.08)) {
+            console.log(`[CRT4] ${symbol} ${sweep.direction} daily leg over-extended — filtered.`);
+            return null;
+        }
         return sweep;
     }
 
-    // ── Forex / Crypto: Daily sweep + EMA-50/200 on Daily ─────────
-    const dataD = await fetchTV(symbol, '1D', 300);
-    if (!dataD || dataD.length < 55) return null;
-    dataD.sort((a, b) => a.timestamp - b.timestamp);
+    // ── Forex + Gold: 4H sweep + EMA-50/200 on 4H ─────────────────────
+    const data4h = await fetchTV(symbol, '4h', 300);
+    if (!data4h || data4h.length < 55) return null;
+    data4h.sort((a, b) => a.timestamp - b.timestamp);
 
-    const trend = getDailyTrend(dataD);
-    // Min range: 100 pips on Daily (JPY pairs ~100pip days are meaningful institutional moves)
-    const minRange = 100 * getPipSize(symbol);
-    const sweep = detect4HSweep(dataD, minRange);
+    const trend = getDailyTrend(data4h);
+    // Forex 4H candles average 30-80 pips; 50 pips is a meaningful institutional move
+    // XAUUSD is already in this branch and keeps 100 pips
+    const minRange = (isXAUUSD(symbol) ? 100 : 50) * getPipSize(symbol);
+    const sweep = detect4HSweep(data4h, minRange);
     if (!sweep) return null;
     if (trend && sweep.direction !== trend) {
-        console.log(`[CRT4] ${symbol} daily sweep ${sweep.direction} filtered — Daily trend is ${trend}`);
+        console.log(`[CRT4] ${symbol} 4H sweep ${sweep.direction} filtered — 4H trend is ${trend}`);
         return null;
     }
-    // 10 Daily bars = 2 weeks — catches legs already >8% extended
-    if (isTrendOverExtended(dataD, sweep.direction, 10, 0.08)) {
-        console.log(`[CRT4] ${symbol} ${sweep.direction} daily leg over-extended — filtered.`);
+    if (isTrendOverExtended(data4h, sweep.direction, 20, 0.08)) {
+        console.log(`[CRT4] ${symbol} ${sweep.direction} 4H leg over-extended — filtered.`);
         return null;
     }
     return sweep;
@@ -531,13 +545,16 @@ async function crt4_scanDaily(symbol) {
 
 /**
  * Phase 2+3: BOS + POI entry scan.
- * ─ XAUUSD            : scans 1H candles (original setup).
- * ─ All other symbols : scans 4H candles.
+ * ─ All pairs : scans 1H candles (4H sweep → 1H BOS entry).
+ *   (Crypto also uses 1H for now since its sweep is Daily and entry on 4H
+ *    would still feed into the same detect1HEntry logic)
  * Returns full entry object or null.
  */
 async function crt4_scan4H(symbol, sweepState) {
-    const tf = isXAUUSD(symbol) ? '1h' : '4h';
-    const limit = isXAUUSD(symbol) ? 200 : 500;
+    // All pairs use 1H for entry — consistent with the original 4H sweep model.
+    // Crypto uses 4H but detect1HEntry works on any candle resolution.
+    const tf = isCrypto(symbol) ? '4h' : '1h';
+    const limit = isCrypto(symbol) ? 500 : 200;
     const data = await fetchTV(symbol, tf, limit);
     if (!data || data.length < 10) return null;
     data.sort((a, b) => a.timestamp - b.timestamp);
@@ -547,21 +564,22 @@ async function crt4_scan4H(symbol, sweepState) {
 
 /**
  * Find TP level.
- * ─ XAUUSD            : nearest unswept 4H swing high/low (original setup).
- * ─ All other symbols : nearest unswept Weekly swing high/low.
+ * ─ Crypto           : nearest unswept Weekly swing (matches Daily sweep scale).
+ * ─ Forex + Gold     : nearest unswept 4H swing (matches 4H sweep scale).
  * Returns { level, source } or null.
  */
 async function crt4_findTP(symbol, entryResult) {
-    if (isXAUUSD(symbol)) {
-        const data4h = await fetchTV(symbol, '4h', 300);
-        if (!data4h || data4h.length < 10) return null;
-        data4h.sort((a, b) => a.timestamp - b.timestamp);
-        return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol, '4H Swing');
+    if (isCrypto(symbol)) {
+        const dataW = await fetchTV(symbol, '1W', 150);
+        if (!dataW || dataW.length < 10) return null;
+        dataW.sort((a, b) => a.timestamp - b.timestamp);
+        return find4HLiquidityTP(dataW, entryResult.direction, entryResult.entryPrice, symbol, 'Weekly Swing');
     }
-    const dataW = await fetchTV(symbol, '1W', 150);
-    if (!dataW || dataW.length < 10) return null;
-    dataW.sort((a, b) => a.timestamp - b.timestamp);
-    return find4HLiquidityTP(dataW, entryResult.direction, entryResult.entryPrice, symbol, 'Weekly Swing');
+    // Forex + Gold: 4H TP target
+    const data4h = await fetchTV(symbol, '4h', 300);
+    if (!data4h || data4h.length < 10) return null;
+    data4h.sort((a, b) => a.timestamp - b.timestamp);
+    return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol, '4H Swing');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -571,17 +589,18 @@ async function crt4_findTP(symbol, entryResult) {
 async function runCRT4Backtest(symbol, startDate, endDate) {
     try {
         console.log(`[CRT4] Fetching data for backtest: ${symbol}...`);
-        const isGold = isXAUUSD(symbol);
+        const isGold   = isXAUUSD(symbol);
+        const crypto   = isCrypto(symbol);
 
         // Timeframe routing:
-        //   XAUUSD:  sweepTF='4h'  entryTF='1h'  tpTF='4h'  (original validated setup)
-        //   Others:  sweepTF='1D'  entryTF='4h'  tpTF='1W'
-        const sweepTF  = isGold ? '4h'  : '1D';
-        const entryTF  = isGold ? '1h'  : '4h';
-        const tpTF     = isGold ? '4h'  : '1W';
-        const sweepLim = isGold ? 1000  : 500;
-        const entryLim = isGold ? 2000  : 2000;
-        const tpLim    = isGold ? 300   : 150;
+        //   Crypto       :  sweepTF='1D'  entryTF='4h'  tpTF='1W'
+        //   Forex + Gold :  sweepTF='4h'  entryTF='1h'  tpTF='4h'
+        const sweepTF  = crypto ? '1D'  : '4h';
+        const entryTF  = crypto ? '4h'  : '1h';
+        const tpTF     = crypto ? '1W'  : '4h';
+        const sweepLim = crypto ? 500   : 1000;
+        const entryLim = 2000;
+        const tpLim    = crypto ? 150   : 300;
 
         const [rawSwp, rawEntry, rawTP] = await Promise.all([
             fetchTV(symbol, sweepTF,  sweepLim, endDate),
@@ -601,11 +620,10 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
         rawTP.sort((a, b)    => a.timestamp - b.timestamp);
 
         const pipSize  = getPipSize(symbol);
-        // Min range: 100 pips for XAUUSD 4H sweeps AND for Daily Forex/Crypto sweeps.
-        // (200 was too high for Daily Forex pairs like GBPJPY which average 80-180 pip days)
-        const minRange = 100 * pipSize;
-        // Extension guard lookback: 20 bars for 4H (3.3 days), 10 bars for Daily (2 weeks)
-        const extLookback = isGold ? 20 : 10;
+        // minRange: Crypto Daily=100 pips | XAUUSD 4H=100 pips | Forex 4H=50 pips
+        const minRange = crypto ? 100 * pipSize : isGold ? 100 * pipSize : 50 * pipSize;
+        // Extension guard lookback: Daily=10 bars (2 weeks), 4H=20 bars (3.3 days)
+        const extLookback = crypto ? 10 : 20;
 
         const setups = [];
         const processedSweeps = new Set();
@@ -653,8 +671,9 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 
             // Find TP: no-lookahead slice of TP timeframe data
             const sliceTP = rawTP.filter(c => c.timestamp <= retestCandle.timestamp);
+            const tpLabel = crypto ? 'Weekly Swing' : '4H Swing';
             const tpResult = sliceTP.length >= 5
-                ? find4HLiquidityTP(sliceTP, entryResult.direction, entryResult.entryPrice, symbol, isGold ? '4H Swing' : 'Weekly Swing')
+                ? find4HLiquidityTP(sliceTP, entryResult.direction, entryResult.entryPrice, symbol, tpLabel)
                 : null;
 
             const sl = entryResult.slPrice;
@@ -681,13 +700,14 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             // Pause scanning until this trade resolves (TP or SL)
             if (resolutionTs) skipUntilMs = resolutionTs;
 
-            const action = entryResult.direction === 'BULLISH' ? 'BUY' : 'SELL';
-            const entryLabel = isGold ? '4H Sweep \u2192 1H BOS' : 'Daily Sweep \u2192 4H BOS';
+            const action     = entryResult.direction === 'BULLISH' ? 'BUY' : 'SELL';
+            const sweepLabel = crypto ? 'Daily Sweep' : '4H Sweep';
+            const entryLabel = crypto ? '4H BOS' : '1H BOS';
 
             setups.push({
                 datetime: sweep.confirmingDatetime,
                 type: `${action} (CRT4)`,
-                context: `${entryLabel} \u2192 ${entryResult.poi.type} Retest`,
+                context: `${sweepLabel} → ${entryLabel} → ${entryResult.poi.type} Retest`,
                 sweepLevel: entryResult.sweepExtreme.toFixed(5),
                 bosLevel: entryResult.bosLevel.toFixed(5),
                 poiType: entryResult.poi.type,
