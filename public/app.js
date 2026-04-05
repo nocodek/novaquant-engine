@@ -267,54 +267,82 @@ backtestForm.addEventListener('submit', async (e) => {
       latestBtResults = data.data;
       currentBtSymbol = data.symbol;
       
-      let outputHTML = `<strong style="color:var(--primary-glow); font-size:1.1rem;">Results for ${data.symbol}:</strong><br><strong style="font-size:0.8rem; color:var(--text-muted)">(${startDate} to ${endDate})</strong><br><br>`;
-      
       const stats = data.data;
+      const crt4 = stats.CRT4 || stats;
+      const wins = (crt4.recent || []).filter(s => s.outcome === 'Win').length;
+      const losses = (crt4.recent || []).filter(s => s.outcome === 'Loss').length;
+      const pending = (crt4.recent || []).filter(s => s.outcome === 'Pending').length;
+      const winRateNum = parseFloat(crt4.winRate) || 0;
+      const winRateColor = winRateNum >= 70 ? 'var(--success)' : winRateNum >= 50 ? 'orange' : 'var(--danger)';
+
+      let outputHTML = `
+        <div style="margin-bottom:16px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+            <strong style="color:var(--primary-glow); font-size:1.1rem;">CRT4 Results — ${data.symbol}</strong>
+            <span style="font-size:0.75rem; color:var(--text-muted); background:rgba(255,255,255,0.05); padding:2px 8px; border-radius:10px;">${startDate} → ${endDate}</span>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; font-size:0.75rem; margin-bottom:12px;">
+            <span style="background:rgba(0,200,150,0.12); color:var(--success); padding:3px 10px; border-radius:10px; border:1px solid rgba(0,200,150,0.3);">⚡ Dual EMA-50/200 Filter</span>
+            <span style="background:rgba(100,120,255,0.12); color:var(--accent); padding:3px 10px; border-radius:10px; border:1px solid rgba(100,120,255,0.3);">🛡️ Extension Guard (8%)</span>
+            <span style="background:rgba(255,255,255,0.06); color:var(--text-muted); padding:3px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.1);">🎯 4H Liquidity TP</span>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:16px; text-align:center;">
+            <div style="background:rgba(255,255,255,0.05); padding:10px; border-radius:8px;">
+              <div style="font-size:1.4rem; font-weight:700; color:var(--text-main);">${crt4.setups}</div>
+              <div style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">SETUPS</div>
+            </div>
+            <div style="background:rgba(0,200,150,0.08); padding:10px; border-radius:8px;">
+              <div style="font-size:1.4rem; font-weight:700; color:var(--success);">${wins}</div>
+              <div style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">WINS</div>
+            </div>
+            <div style="background:rgba(255,70,70,0.08); padding:10px; border-radius:8px;">
+              <div style="font-size:1.4rem; font-weight:700; color:var(--danger);">${losses}</div>
+              <div style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">LOSSES</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.05); padding:10px; border-radius:8px;">
+              <div style="font-size:1.4rem; font-weight:700; color:${winRateColor};">${crt4.winRate}</div>
+              <div style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">WIN RATE</div>
+            </div>
+          </div>
+        </div>`;
+
       for (const [interval, result] of Object.entries(stats)) {
         if (result.error) {
            outputHTML += `<span style="color:var(--danger)">[${interval}] ERROR: ${result.error}</span><br>`;
-        } else {
-           outputHTML += `<div style="background:rgba(255,255,255,0.05); padding:10px; border-radius:6px; margin-bottom:10px;">
-                <span style="color:var(--success); font-weight:bold;">[${interval}]</span> Scanned: ${result.candles} | <strong style="color:var(--accent);">Setups: ${result.setups} (${result.winRate} Win Rate)</strong><br>`;
-           
-           if (result.recent && result.recent.length > 0) {
-               outputHTML += `<div style="margin-top:10px; font-size:0.85rem; border-left:2px solid var(--accent); padding-left:10px;">`;
-               result.recent.slice(0, 3).forEach(setup => {
-                   const outcomeColor = setup.outcome === 'Win' ? 'var(--success)' : (setup.outcome === 'Loss' ? 'var(--danger)' : 'var(--text-muted)');
-                   const actionLabel = setup.type.includes('BUY') ? 'BUY 🟢' : 'SELL 🔴';
-                   const isCRT4 = !!setup.sweepLevel;
+        } else if (result.recent && result.recent.length > 0) {
+           outputHTML += `<div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:10px; letter-spacing:0.5px;">TRADE LOG — ${result.recent.length} setup${result.recent.length > 1 ? 's' : ''} (newest first)</div>`;
+           outputHTML += `<div style="display:flex; flex-direction:column; gap:8px;">`;
+           result.recent.forEach((setup, idx) => {
+               const outcomeColor = setup.outcome === 'Win' ? 'var(--success)' : (setup.outcome === 'Loss' ? 'var(--danger)' : '#f0a500');
+               const outcomeBg = setup.outcome === 'Win' ? 'rgba(0,200,150,0.08)' : (setup.outcome === 'Loss' ? 'rgba(255,70,70,0.08)' : 'rgba(255,165,0,0.06)');
+               const actionLabel = setup.type.includes('BUY') ? '🟢 BUY' : '🔴 SELL';
+               const isCRT4 = !!setup.sweepLevel;
 
-                   if (isCRT4) {
-                       outputHTML += `<div style="margin-bottom:10px; padding:8px; background:rgba(255,255,255,0.04); border-radius:6px; border-left:3px solid var(--accent);">
-                           <strong style="color:var(--text-main);">${setup.datetime} (WAT)</strong> &mdash; <strong style="color:var(--accent);">${actionLabel}</strong><br>
-                           <span style="color:var(--text-muted); font-size:0.8rem;">${setup.context}</span>
-                           <div style="margin-top:6px; display:grid; grid-template-columns:1fr 1fr; gap:3px 14px; font-size:0.82rem;">
-                               <span>📍 <b>Sweep:</b> ${setup.sweepLevel}</span>
-                               <span>🔓 <b>BOS:</b> ${setup.bosLevel}</span>
-                               <span>🧲 <b>POI:</b> ${setup.poiType}</span>
-                               <span>🎯 <b>Entry:</b> ${setup.entry}</span>
-                               <span>🛡️ <b>SL:</b> <span style="color:var(--danger);">${setup.sl}</span></span>
-                               <span>🏁 <b>TP:</b> <span style="color:var(--success);">${setup.tp}</span> <span style="color:var(--text-muted);font-size:0.75rem;">(${setup.tpSource})</span></span>
-                           </div>
-                           <div style="margin-top:5px;">➔ Outcome: <strong style="color:${outcomeColor};">${setup.outcome}</strong></div>
-                       </div>`;
-                   } else {
-                       outputHTML += `<div style="margin-bottom:8px;">
-                           <strong style="color:var(--text-main);">${setup.datetime} (UTC+1 Lagos)</strong> - 👀 Action: <strong style="color:var(--accent);">${actionLabel}</strong><br>
-                          ${setup.context ? `📍 Context: ${setup.context} <br>` : `🧲 Inducement: ${setup.idm || 'N/A'} <br>`}
-                          ${setup.sl ? `🛡️ SL: ${setup.sl} <br>` : ''}
-                          🎯 ${setup.context ? 'Entry' : 'Nearest OB/BB'}: ${setup.entry} <br>
-                          ➔ Outcome: <strong style="color:${outcomeColor}">${setup.outcome}</strong>
-                       </div>`;
-                   }
-               });
-               outputHTML += `</div>`;
-           }
+               if (isCRT4) {
+                   outputHTML += `<div style="padding:10px 12px; background:${outcomeBg}; border-radius:8px; border:1px solid rgba(255,255,255,0.07); border-left:3px solid ${outcomeColor};">
+                       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                         <span style="font-weight:700; font-size:0.9rem; color:var(--text-main);">${actionLabel}</span>
+                         <span style="font-size:0.75rem; color:var(--text-muted);">${setup.datetime}</span>
+                         <span style="font-size:0.8rem; font-weight:700; color:${outcomeColor}; background:${outcomeBg}; padding:2px 8px; border-radius:10px;">${setup.outcome}</span>
+                       </div>
+                       <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">${setup.context}</div>
+                       <div style="display:grid; grid-template-columns:1fr 1fr; gap:3px 20px; font-size:0.8rem;">
+                           <span>📍 <b>Sweep:</b> ${setup.sweepLevel}</span>
+                           <span>🔓 <b>BOS:</b> ${setup.bosLevel}</span>
+                           <span>🧲 <b>POI:</b> ${setup.poiType}</span>
+                           <span>🎯 <b>Entry:</b> ${setup.entry}</span>
+                           <span>🛡️ <b>SL:</b> <span style="color:var(--danger);">${setup.sl}</span></span>
+                           <span>🏁 <b>TP:</b> <span style="color:var(--success);">${setup.tp}</span> <span style="color:var(--text-muted); font-size:0.72rem;">(${setup.tpSource})</span></span>
+                       </div>
+                   </div>`;
+               }
+           });
            outputHTML += `</div>`;
         }
       }
       btContent.innerHTML = outputHTML;
       btTelegramBtn.style.display = 'inline-flex';
+      btTelegramBtn.innerHTML = `<i class="fa-brands fa-telegram"></i> Send to Telegram`;
     } else {
       btContent.innerHTML = `<span style="color:var(--danger)">Failed: ${data.error || 'Unknown Error'}</span>`;
     }

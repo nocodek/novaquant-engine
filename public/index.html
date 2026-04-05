@@ -44,7 +44,7 @@
         <div id="status-dot" style="width:8px; height:8px; border-radius:50%; background:var(--text-muted); box-shadow:0 0 8px var(--text-muted);"></div>
         <span id="status-text" style="color:var(--text-muted);">CHECKING SERVER...</span>
       </div>
-      <p class="subtitle" style="margin-top:15px;">CRT4 Institutional Signal Engine — 4H Sweep · 1H BOS · POI Retest</p>
+      <p class="subtitle" style="margin-top:15px;">CRT4 v2 — Dual EMA Bias · Trend Extension Guard · 4H Sweep · 1H BOS · POI Retest</p>
     </header>
 
     <main>
@@ -90,13 +90,13 @@
         <div id="backtest-results" style="display:none; background:rgba(0,0,0,0.3); padding:15px; border-radius:8px; font-family:monospace; line-height: 1.6;">
           <div id="bt-loader" style="color:var(--text-muted);"><i class="fa-solid fa-spinner fa-spin"></i> Fetching OHLC data and mapping Daily/LTF structure (~20 sec)...</div>
           <div id="bt-content" style="display:none; color: var(--text-main);"></div>
-          <button id="bt-telegram-btn" class="btn-primary" style="display:none; margin-top:20px; font-family:'Outfit', sans-serif;"><i class="fa-brands fa-telegram"></i> Send Last 3 to Telegram</button>
+          <button id="bt-telegram-btn" class="btn-primary" style="display:none; margin-top:20px; font-family:'Outfit', sans-serif;"><i class="fa-brands fa-telegram"></i> Send to Telegram</button>
         </div>
       </section>
     </main>
     
     <footer>
-      <p>Powered by <strong>CRT4 Strategy</strong> — 4H candle range sweeps decoded into institutional 1H BOS entries with OB, FVG &amp; Breaker Block POI confirmation.</p>
+      <p>Powered by <strong>CRT4 v2 Strategy</strong> — Dual EMA-50/200 macro bias filter + trend extension guard eliminates late-trend traps. Precision 4H sweep → 1H BOS → OB/FVG/BB POI entry with structural 4H liquidity pool targets.</p>
     </footer>
   </div>
 
