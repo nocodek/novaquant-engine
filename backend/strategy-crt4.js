@@ -1,10 +1,10 @@
 /**
- * CRT4 Strategy — Candle Range Theory 4H
+ * CRT4 Strategy — Candle Range Theory (Daily + 4H)
  * ===========================================
- * Phase 1 (SCAN_4H):      Detect sweep of last 4H candle range + body confirmation
- * Phase 2 (SCAN_1H_BOS):  Wait for 1H break of structure (BOS) after sweep
- * Phase 3 (SCAN_1H_POI):  After BOS, wait for price to retrace into 1H OB/BB/FVG
- * Phase 4 (SCAN_DAILY_TP):Find Daily key level for TP target
+ * Phase 1 (SCAN_DAILY):    Detect sweep of last Daily candle range + body confirmation
+ * Phase 2 (SCAN_4H_BOS):   Wait for 4H break of structure (BOS) after daily sweep
+ * Phase 3 (SCAN_4H_POI):   After BOS, wait for price to retrace into 4H OB/BB/FVG
+ * Phase 4 (WEEKLY_TP):     Find nearest unswept Weekly swing H/L for TP target
  */
 
 const { fetchTV } = require('./tv-fetcher');
@@ -193,34 +193,31 @@ function calcEMA(closes, period) {
 }
 
 /**
- * Determine market bias on the 4H timeframe using dual EMA (50 + 200).
+ * Determine market bias on the DAILY timeframe using dual EMA (50 + 200).
  *
  * Rules:
  *  - BULLISH  : close > EMA-50 AND close > EMA-200 (clean uptrend).
  *  - BEARISH  : close < EMA-50 AND close < EMA-200 (clean downtrend).
  *  - null     : EMA crossover zone (EMAs are within 0.5% of each other → choppy → skip).
  *
- * Using EMA-200 as the macro bias filter prevents continuation shorts into
- * deeply oversold / capitulation zones — the root cause of the Mar 25 loss.
+ * Needs 205+ Daily candles (roughly 9-10 months of history).
  */
-function get4HTrend(data4h) {
-    if (!data4h || data4h.length < 205) return null; // need 200+ candles for EMA-200
-    const closes = data4h.map(c => p(c.close));
+function getDailyTrend(dataD) {
+    if (!dataD || dataD.length < 205) return null;
+    const closes = dataD.map(c => p(c.close));
     const ema50  = calcEMA(closes, 50);
     const ema200 = calcEMA(closes, 200);
     if (ema50 === null || ema200 === null) return null;
 
     const lastClose = closes[closes.length - 1];
 
-    // Reject if the two EMAs are too close (choppy/transitioning market)
     const emaDiffPct = Math.abs(ema50 - ema200) / ema200;
     if (emaDiffPct < 0.005) return null; // within 0.5% → indeterminate
 
     if (lastClose > ema50 && lastClose > ema200) return 'BULLISH';
     if (lastClose < ema50 && lastClose < ema200) return 'BEARISH';
 
-    // Price between the two EMAs — transitional, skip
-    return null;
+    return null; // price between EMAs — transitional, skip
 }
 
 /**
@@ -477,60 +474,93 @@ function detect1HEntry(data1h, sweepState) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Phase 1: Scan latest 4H candles for a CRT sweep.
+ * Returns true if the symbol is XAUUSD (or GOLD).
+ * XAUUSD keeps the original 4H sweep + 1H entry + 4H TP setup
+ * because the 4H timeframe is well-calibrated for gold (83%+ backtest WR).
+ * All other pairs (Forex + Crypto) use Daily sweep + 4H entry + Weekly TP.
+ */
+function isXAUUSD(symbol) {
+    return /XAU|GOLD/i.test(symbol);
+}
+
+/**
+ * Phase 1: Detect CRT sweep.
+ * ─ XAUUSD            : scans 4H candles (original calibrated setup, 83% WR).
+ * ─ All other symbols : scans Daily candles (larger structural sweeps).
  * Returns sweep state object or null.
  */
-async function crt4_scan4H(symbol) {
-    const data4h = await fetchTV(symbol, '4h', 100);
-    if (!data4h || data4h.length < 55) return null;
-    data4h.sort((a, b) => a.timestamp - b.timestamp);
+async function crt4_scanDaily(symbol) {
+    const isGold = isXAUUSD(symbol);
 
-    // ── Market bias filter (EMA-50 on 4H) ───────────────────────────────────
-    const trend = get4HTrend(data4h);
+    if (isGold) {
+        // ── XAUUSD: original 4H sweep + EMA-50/200 on 4H ───────────
+        const data4h = await fetchTV(symbol, '4h', 300);
+        if (!data4h || data4h.length < 55) return null;
+        data4h.sort((a, b) => a.timestamp - b.timestamp);
 
-    const minRange = 100 * getPipSize(symbol);
-    const sweep = detect4HSweep(data4h, minRange);
+        const trend = getDailyTrend(data4h); // EMA logic is TF-agnostic
+        const minRange = 100 * getPipSize(symbol);
+        const sweep = detect4HSweep(data4h, minRange);
+        if (!sweep) return null;
+        if (trend && sweep.direction !== trend) return null;
+        if (isTrendOverExtended(data4h, sweep.direction, 20, 0.08)) return null;
+        return sweep;
+    }
+
+    // ── Forex / Crypto: Daily sweep + EMA-50/200 on Daily ─────────
+    const dataD = await fetchTV(symbol, '1D', 300);
+    if (!dataD || dataD.length < 55) return null;
+    dataD.sort((a, b) => a.timestamp - b.timestamp);
+
+    const trend = getDailyTrend(dataD);
+    const minRange = 200 * getPipSize(symbol);
+    const sweep = detect4HSweep(dataD, minRange);
     if (!sweep) return null;
-
-    // Only pass sweeps that align with the 4H trend:
-    // Bullish sweep (low sweep → expect rally) only valid in uptrend.
-    // Bearish sweep (high sweep → expect drop) only valid in downtrend.
     if (trend && sweep.direction !== trend) {
-        console.log(`[CRT4] ${symbol} sweep direction ${sweep.direction} filtered — 4H trend is ${trend}`);
+        console.log(`[CRT4] ${symbol} daily sweep ${sweep.direction} filtered — Daily trend is ${trend}`);
         return null;
     }
-
-    // ── Trend over-extension guard (live scanner) ────────────────────────────
-    // Block if the last 20 4H bars (3.3 days) have already moved >8% from the swing origin.
-    if (isTrendOverExtended(data4h, sweep.direction, 20, 0.08)) {
-        console.log(`[CRT4] ${symbol} ${sweep.direction} leg over-extended — filtered.`);
+    // 10 Daily bars = 2 weeks — catches legs already >8% extended
+    if (isTrendOverExtended(dataD, sweep.direction, 10, 0.08)) {
+        console.log(`[CRT4] ${symbol} ${sweep.direction} daily leg over-extended — filtered.`);
         return null;
     }
-
     return sweep;
 }
 
 /**
- * Phase 2+3: Called every 1H. Checks if BOS + POI retest has occurred.
+ * Phase 2+3: BOS + POI entry scan.
+ * ─ XAUUSD            : scans 1H candles (original setup).
+ * ─ All other symbols : scans 4H candles.
  * Returns full entry object or null.
  */
-async function crt4_scan1H(symbol, sweepState) {
-    const data1h = await fetchTV(symbol, '1h', 200);
-    if (!data1h || data1h.length < 10) return null;
-    data1h.sort((a, b) => a.timestamp - b.timestamp);
+async function crt4_scan4H(symbol, sweepState) {
+    const tf = isXAUUSD(symbol) ? '1h' : '4h';
+    const limit = isXAUUSD(symbol) ? 200 : 500;
+    const data = await fetchTV(symbol, tf, limit);
+    if (!data || data.length < 10) return null;
+    data.sort((a, b) => a.timestamp - b.timestamp);
     const normalised = { ...sweepState, sweepTimestamp: sweepState.sweepTimestamp || sweepState.confirmingTs, symbol };
-    return detect1HEntry(data1h, normalised);
+    return detect1HEntry(data, normalised);
 }
 
 /**
- * Find TP = nearest Daily key level above/below entry.
+ * Find TP level.
+ * ─ XAUUSD            : nearest unswept 4H swing high/low (original setup).
+ * ─ All other symbols : nearest unswept Weekly swing high/low.
  * Returns { level, source } or null.
  */
 async function crt4_findTP(symbol, entryResult) {
-    const data4h = await fetchTV(symbol, '4h', 300);
-    if (!data4h || data4h.length < 10) return null;
-    data4h.sort((a, b) => a.timestamp - b.timestamp);
-    return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol);
+    if (isXAUUSD(symbol)) {
+        const data4h = await fetchTV(symbol, '4h', 300);
+        if (!data4h || data4h.length < 10) return null;
+        data4h.sort((a, b) => a.timestamp - b.timestamp);
+        return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol);
+    }
+    const dataW = await fetchTV(symbol, '1W', 150);
+    if (!dataW || dataW.length < 10) return null;
+    dataW.sort((a, b) => a.timestamp - b.timestamp);
+    return find4HLiquidityTP(dataW, entryResult.direction, entryResult.entryPrice, symbol);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -540,100 +570,98 @@ async function crt4_findTP(symbol, entryResult) {
 async function runCRT4Backtest(symbol, startDate, endDate) {
     try {
         console.log(`[CRT4] Fetching data for backtest: ${symbol}...`);
+        const isGold = isXAUUSD(symbol);
 
-        const [raw4h, raw1h] = await Promise.all([
-            fetchTV(symbol, '4h', 1000, endDate),
-            fetchTV(symbol, '1h', 2000, endDate)
+        // Timeframe routing:
+        //   XAUUSD:  sweepTF='4h'  entryTF='1h'  tpTF='4h'  (original validated setup)
+        //   Others:  sweepTF='1D'  entryTF='4h'  tpTF='1W'
+        const sweepTF  = isGold ? '4h'  : '1D';
+        const entryTF  = isGold ? '1h'  : '4h';
+        const tpTF     = isGold ? '4h'  : '1W';
+        const sweepLim = isGold ? 1000  : 500;
+        const entryLim = isGold ? 2000  : 2000;
+        const tpLim    = isGold ? 300   : 150;
+
+        const [rawSwp, rawEntry, rawTP] = await Promise.all([
+            fetchTV(symbol, sweepTF,  sweepLim, endDate),
+            fetchTV(symbol, entryTF,  entryLim, endDate),
+            fetchTV(symbol, tpTF,     tpLim,    endDate)
         ]);
 
         const startMs = new Date(startDate + 'T00:00:00Z').getTime();
         const endMs   = new Date(endDate   + 'T23:59:59Z').getTime();
 
-        if (raw4h.length < 10 || raw1h.length < 20) {
+        if (rawSwp.length < 10 || rawEntry.length < 20) {
             return { error: 'Insufficient data for CRT4 backtest.' };
         }
 
-        // Sort all data ascending (oldest → newest) — TV returns newest first
-        raw4h.sort((a, b) => a.timestamp - b.timestamp);
-        raw1h.sort((a, b) => a.timestamp - b.timestamp);
+        rawSwp.sort((a, b)   => a.timestamp - b.timestamp);
+        rawEntry.sort((a, b) => a.timestamp - b.timestamp);
+        rawTP.sort((a, b)    => a.timestamp - b.timestamp);
 
         const pipSize  = getPipSize(symbol);
-        const minRange = 100 * pipSize;   // 100 pips minimum range
+        // Minimum sweep candle range: 100 pips for XAUUSD (4H), 200 pips for others (Daily)
+        const minRange = (isGold ? 100 : 200) * pipSize;
+        // Extension guard lookback: 20 bars for 4H (3.3 days), 10 bars for Daily (2 weeks)
+        const extLookback = isGold ? 20 : 10;
 
         const setups = [];
-        const processedSweeps = new Set(); // prevent re-processing same sweep
-        let skipUntilMs = 0;              // pause scanning while a trade is active
+        const processedSweeps = new Set();
+        let skipUntilMs = 0;
 
-        // Walk through each 4H candle in range
-        for (let i = 1; i < raw4h.length - 1; i++) {
-            const c4h = raw4h[i];
-            if (c4h.timestamp < startMs || c4h.timestamp > endMs) continue;
-            if (c4h.timestamp < skipUntilMs) continue; // paused: previous trade still active
+        // Walk through each sweep-TF candle in range
+        for (let i = 1; i < rawSwp.length - 1; i++) {
+            const cSwp = rawSwp[i];
+            if (cSwp.timestamp < startMs || cSwp.timestamp > endMs) continue;
+            if (cSwp.timestamp < skipUntilMs) continue;
 
-            // Run sweep detection on a slice ending at [i]
-            const slice4h = raw4h.slice(0, i + 1);
-            const sweep = detect4HSweep(slice4h, minRange);
-
+            const sliceSwp = rawSwp.slice(0, i + 1);
+            const sweep = detect4HSweep(sliceSwp, minRange);
             if (!sweep) continue;
 
-            // ── Market bias filter: require sweep direction to match dual EMA trend ──
-            // Use at least 205 candles of context for EMA-200.
-            const trendSlice = raw4h.slice(0, i + 1);
-            const trend = get4HTrend(trendSlice);
-            if (trend && sweep.direction !== trend) continue; // against the trend — skip
+            // Market bias filter using the appropriate EMA function (TF-agnostic)
+            const trendSlice = rawSwp.slice(0, i + 1);
+            const trend = getDailyTrend(trendSlice); // works on any TF with enough bars
+            if (trend && sweep.direction !== trend) continue;
 
-            // ── Trend over-extension guard ──────────────────────────────────────
-            // Reject if the current directional leg (last 20 4H bars = ~3.3 days)
-            // has already moved >8% from its swing origin.
-            // Catches late-trend continuation setups where the move has exhausted
-            // (e.g. the Mar 25 rogue SELL on XAUUSD after a ~17% bear leg).
-            if (isTrendOverExtended(trendSlice, sweep.direction, 20, 0.08)) {
-                console.log(`[CRT4] ${symbol} ${sweep.direction} leg over-extended, skipping.`);
-                continue;
-            }
+            if (isTrendOverExtended(trendSlice, sweep.direction, extLookback, 0.08)) continue;
 
-            // Skip if we've already handled this exact sweep candle
             if (processedSweeps.has(sweep.confirmingTs)) continue;
             processedSweeps.add(sweep.confirmingTs);
 
-            // Now walk through 1H candles that start after the sweep
+            // Walk through entry-TF candles after the sweep
             const afterSweepMs = sweep.confirmingTs;
-            const relevantHours = raw1h.filter(c => c.timestamp > afterSweepMs && c.timestamp <= endMs);
+            const relevantEntry = rawEntry.filter(c => c.timestamp > afterSweepMs && c.timestamp <= endMs);
+            if (relevantEntry.length < 4) continue;
 
-            if (relevantHours.length < 4) continue;
-
-            // Track which 1H candle triggered the POI retest (last in slice when entryResult fired)
             let entryResult = null;
             let retestCandle = null;
             const sweepStateForEntry = { ...sweep, sweepTimestamp: sweep.confirmingTs, symbol };
+            // Max wait: 5 days for XAUUSD (1H entry), 10 days for others (4H entry)
+            const maxWaitMs = (isGold ? 5 : 10) * 24 * 60 * 60 * 1000;
 
-            for (let h = 6; h <= relevantHours.length; h++) {
-                const slice1h = raw1h.filter(c => c.timestamp <= relevantHours[h - 1].timestamp);
-                entryResult = detect1HEntry(slice1h, sweepStateForEntry);
-                if (entryResult) {
-                    retestCandle = relevantHours[h - 1]; // capture the retest candle
-                    break;
-                }
-                // Bail if 5 days pass without a valid setup
-                const elapsed = relevantHours[h - 1].timestamp - afterSweepMs;
-                if (elapsed > 5 * 24 * 60 * 60 * 1000) break;
+            for (let h = 6; h <= relevantEntry.length; h++) {
+                const sliceEntry = rawEntry.filter(c => c.timestamp <= relevantEntry[h - 1].timestamp);
+                entryResult = detect1HEntry(sliceEntry, sweepStateForEntry);
+                if (entryResult) { retestCandle = relevantEntry[h - 1]; break; }
+                if (relevantEntry[h - 1].timestamp - afterSweepMs > maxWaitMs) break;
             }
 
             if (!entryResult || !retestCandle) continue;
 
-            // Find TP = nearest intact 4H swing high/low (liquidity pool) above/below entry.
-            // Use 4H slice up to the entry candle to avoid lookahead.
-            const slice4hForTP = raw4h.slice(0, i + 1);
-            const tpResult = find4HLiquidityTP(slice4hForTP, entryResult.direction, entryResult.entryPrice, symbol);
+            // Find TP: no-lookahead slice of TP timeframe data
+            const sliceTP = rawTP.filter(c => c.timestamp <= retestCandle.timestamp);
+            const tpResult = sliceTP.length >= 5
+                ? find4HLiquidityTP(sliceTP, entryResult.direction, entryResult.entryPrice, symbol)
+                : null;
 
             const sl = entryResult.slPrice;
             const tp = tpResult ? tpResult.level : null;
 
-            // Evaluate outcome starting FROM the retest candle
-            // (detect1HEntry already confirmed price is in the POI zone at retestCandle)
+            // Evaluate outcome from the retest candle using entry-TF (or finer) candles
             let outcome = 'Pending';
             let resolutionTs = null;
-            const postRetestCandles = raw1h.filter(c => c.timestamp >= retestCandle.timestamp && c.timestamp <= endMs);
+            const postRetestCandles = rawEntry.filter(c => c.timestamp >= retestCandle.timestamp && c.timestamp <= endMs);
 
             for (let k = 0; k < Math.min(postRetestCandles.length, 600); k++) {
                 const fh = p(postRetestCandles[k].high);
@@ -652,11 +680,12 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             if (resolutionTs) skipUntilMs = resolutionTs;
 
             const action = entryResult.direction === 'BULLISH' ? 'BUY' : 'SELL';
+            const entryLabel = isGold ? '4H Sweep \u2192 1H BOS' : 'Daily Sweep \u2192 4H BOS';
 
             setups.push({
                 datetime: sweep.confirmingDatetime,
                 type: `${action} (CRT4)`,
-                context: `4H Sweep → 1H BOS → ${entryResult.poi.type} Retest`,
+                context: `${entryLabel} \u2192 ${entryResult.poi.type} Retest`,
                 sweepLevel: entryResult.sweepExtreme.toFixed(5),
                 bosLevel: entryResult.bosLevel.toFixed(5),
                 poiType: entryResult.poi.type,
@@ -666,9 +695,6 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
                 tpSource: tpResult ? tpResult.source : 'Not found',
                 outcome
             });
-
-            // Advance 4H index past this sweep to avoid re-using same range
-            // (find next valid candle after entry window)
         }
 
         const wins = setups.filter(s => s.outcome === 'Win').length;
@@ -676,7 +702,7 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
         const winRate = complete > 0 ? ((wins / complete) * 100).toFixed(1) + '%' : '0%';
 
         return {
-            candles: raw4h.filter(c => c.timestamp >= startMs && c.timestamp <= endMs).length,
+            candles: rawSwp.filter(c => c.timestamp >= startMs && c.timestamp <= endMs).length,
             setups: setups.length,
             winRate,
             recent: setups.slice(-10).reverse()
@@ -689,8 +715,8 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 }
 
 module.exports = {
-    crt4_scan4H,
-    crt4_scan1H,
-    crt4_findTP,
+    crt4_scanDaily,    // Phase 1: Daily sweep detection
+    crt4_scan4H,       // Phase 2+3: 4H BOS + POI entry detection
+    crt4_findTP,       // TP: nearest unswept Weekly swing level
     runCRT4Backtest
 };

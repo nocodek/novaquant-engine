@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const dotenv = require('dotenv');
 const { sendCRT4Signal } = require('./telegram');
 const { fetchTV } = require('./tv-fetcher');
-const { crt4_scan4H, crt4_scan1H, crt4_findTP } = require('./strategy-crt4');
+const { crt4_scanDaily, crt4_scan4H, crt4_findTP } = require('./strategy-crt4');
 const logger = require('./logger');
 
 dotenv.config();
@@ -25,19 +25,26 @@ function startCronJobs(getSettings) {
 
   // Initial run on server start
   setTimeout(async () => {
-      logger.info("Running initial server-start CRT4 scan...");
-      await scanCRT4_4H(getSettings);
+      logger.info("Running initial server-start CRT4 sweep scan...");
+      await scanCRT4_Sweep(getSettings);
   }, 5000);
 
-  // CRT4: 4H candle closes at 03,07,11,15,19,23 WAT — fire at minute 1
+  // Phase 1a — XAUUSD: 4H candle closes at 03,07,11,15,19,23 WAT
+  // Also covers entry check for XAUUSD (1H BOS) via scanCRT4_Sweep internal routing
   cron.schedule('1 3,7,11,15,19,23 * * *', async () => {
-      logger.info('[CRT4] 4H candle closed. Running 4H sweep scan...');
-      await scanCRT4_4H(getSettings);
+      logger.info('[CRT4] 4H candle closed. Running sweep scan (XAUUSD + entry checks)...');
+      await scanCRT4_Sweep(getSettings);
   }, cronOptions);
 
-  // CRT4: 1H BOS + resolution check runs every hour at minute 2
-  cron.schedule('2 * * * *', async () => {
-      await scanCRT4_1H(getSettings);
+  // Phase 1b — Forex / Crypto: Daily candle closes at 00:00 UTC = 01:00 WAT
+  cron.schedule('1 1 * * *', async () => {
+      logger.info('[CRT4] Daily candle closed. Running daily sweep scan (Forex/Crypto)...');
+      await scanCRT4_Sweep(getSettings);
+  }, cronOptions);
+
+  // Phase 2+3 — BOS + POI entry check at every 4H close (covers 4H entry for all, 1H for XAUUSD via routing)
+  cron.schedule('2 3,7,11,15,19,23 * * *', async () => {
+      await scanCRT4_Entry(getSettings);
   }, cronOptions);
 
   logger.info(`CRT4 cron jobs scheduled (timezone: ${cronOptions.timezone})`);
@@ -60,7 +67,7 @@ function getCRT4State(symbol) {
     return crt4State[symbol];
 }
 
-async function scanCRT4_4H(getSettings) {
+async function scanCRT4_Sweep(getSettings) {
     const settings = await getSettings();
     const forexClosed = isForexClosed();
     const allSymbols = [
@@ -72,12 +79,12 @@ async function scanCRT4_4H(getSettings) {
         const state = getCRT4State(symbol);
 
         if (state.phase !== 'SCAN_4H') {
-            logger.info(`[CRT4] ${symbol} is in phase ${state.phase} — skipping 4H scan.`);
+            logger.info(`[CRT4] ${symbol} is in phase ${state.phase} — skipping sweep scan.`);
             continue;
         }
 
         try {
-            const sweep = await crt4_scan4H(symbol);
+            const sweep = await crt4_scanDaily(symbol); // routes internally: XAUUSD=4H, others=Daily
             if (sweep) {
                 const sweepKey = `${symbol}-CRT4-${sweep.confirmingTs}`;
                 if (state.alertedSweepKey === sweepKey) continue;
@@ -88,14 +95,14 @@ async function scanCRT4_4H(getSettings) {
                 state.alertedSweepKey = sweepKey;
             }
         } catch (err) {
-            logger.error(`[CRT4] 4H scan error for ${symbol}: ${err.message}`);
+            logger.error(`[CRT4] Sweep scan error for ${symbol}: ${err.message}`);
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
 }
 
-async function scanCRT4_1H(getSettings) {
+async function scanCRT4_Entry(getSettings) {
     const settings = await getSettings();
     const forexClosed = isForexClosed();
     const allSymbols = [
@@ -108,7 +115,7 @@ async function scanCRT4_1H(getSettings) {
         return ph === 'SCAN_1H_BOS' || ph === 'WAITING_RESOLUTION';
     });
     if (active.length === 0) return;
-    logger.info(`[CRT4] 1H scan: ${active.filter(s => getCRT4State(s).phase === 'SCAN_1H_BOS').length} awaiting BOS / ${active.filter(s => getCRT4State(s).phase === 'WAITING_RESOLUTION').length} awaiting resolution`);
+    logger.info(`[CRT4] Entry scan: ${active.filter(s => getCRT4State(s).phase === 'SCAN_1H_BOS').length} awaiting BOS / ${active.filter(s => getCRT4State(s).phase === 'WAITING_RESOLUTION').length} awaiting resolution`);
 
     for (const symbol of active) {
         const state = getCRT4State(symbol);
@@ -116,10 +123,11 @@ async function scanCRT4_1H(getSettings) {
         // ─── WAITING_RESOLUTION: check if current price hit TP or SL ─────────
         if (state.phase === 'WAITING_RESOLUTION' && state.trade) {
             try {
-                const data1h = await fetchTV(symbol, '1h', 5);
-                if (data1h && data1h.length > 0) {
-                    data1h.sort((a, b) => a.timestamp - b.timestamp);
-                    const latest = data1h[data1h.length - 1];
+                const resTF = /XAU|GOLD/i.test(symbol) ? '1h' : '4h';
+                const resData = await fetchTV(symbol, resTF, 5);
+                if (resData && resData.length > 0) {
+                    resData.sort((a, b) => a.timestamp - b.timestamp);
+                    const latest = resData[resData.length - 1];
                     const { direction, sl, tp } = state.trade;
 
                     let resolved = false;
@@ -146,16 +154,17 @@ async function scanCRT4_1H(getSettings) {
         // ─── SCAN_1H_BOS: look for entry signal ─────────────────────────────
         if (!state.sweep) continue;
 
-        // Auto-expire: if sweep is older than 5 days with no BOS, reset
+        // Auto-expire: XAUUSD (4H sweep) → 5 days; others (Daily sweep) → 10 days
         const ageMs = Date.now() - state.sweep.confirmingTs;
-        if (ageMs > 5 * 24 * 60 * 60 * 1000) {
-            logger.warn(`[CRT4] ${symbol} sweep expired (>5 days). Resetting to SCAN_4H.`);
+        const maxAge = /XAU|GOLD/i.test(symbol) ? 5 : 10;
+        if (ageMs > maxAge * 24 * 60 * 60 * 1000) {
+            logger.warn(`[CRT4] ${symbol} sweep expired (>${maxAge} days). Resetting to SCAN_4H.`);
             crt4State[symbol] = { phase: 'SCAN_4H', sweep: null, alertedSweepKey: null };
             continue;
         }
 
         try {
-            const entry = await crt4_scan1H(symbol, state.sweep);
+            const entry = await crt4_scan4H(symbol, state.sweep); // routes: XAUUSD=1H, others=4H
 
             if (entry) {
                 logger.info(`[CRT4] ✅ Entry found on ${symbol}! Finding TP level...`);
