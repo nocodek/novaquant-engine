@@ -193,17 +193,78 @@ function calcEMA(closes, period) {
 }
 
 /**
- * Determine market bias on the 4H timeframe using EMA-50.
- * Returns 'BULLISH' if last close > EMA-50, 'BEARISH' if below.
- * Returns null if insufficient data.
+ * Determine market bias on the 4H timeframe using dual EMA (50 + 200).
+ *
+ * Rules:
+ *  - BULLISH  : close > EMA-50 AND close > EMA-200 (clean uptrend).
+ *  - BEARISH  : close < EMA-50 AND close < EMA-200 (clean downtrend).
+ *  - null     : EMA crossover zone (EMAs are within 0.5% of each other → choppy → skip).
+ *
+ * Using EMA-200 as the macro bias filter prevents continuation shorts into
+ * deeply oversold / capitulation zones — the root cause of the Mar 25 loss.
  */
 function get4HTrend(data4h) {
-    if (!data4h || data4h.length < 52) return null;
+    if (!data4h || data4h.length < 205) return null; // need 200+ candles for EMA-200
     const closes = data4h.map(c => p(c.close));
-    const ema = calcEMA(closes, 50);
-    if (ema === null) return null;
+    const ema50  = calcEMA(closes, 50);
+    const ema200 = calcEMA(closes, 200);
+    if (ema50 === null || ema200 === null) return null;
+
     const lastClose = closes[closes.length - 1];
-    return lastClose > ema ? 'BULLISH' : 'BEARISH';
+
+    // Reject if the two EMAs are too close (choppy/transitioning market)
+    const emaDiffPct = Math.abs(ema50 - ema200) / ema200;
+    if (emaDiffPct < 0.005) return null; // within 0.5% → indeterminate
+
+    if (lastClose > ema50 && lastClose > ema200) return 'BULLISH';
+    if (lastClose < ema50 && lastClose < ema200) return 'BEARISH';
+
+    // Price between the two EMAs — transitional, skip
+    return null;
+}
+
+/**
+ * Trend over-extension guard.
+ *
+ * After a sustained directional run exceeding `maxPct` of price from its
+ * recent swing origin, continuation setups are blocked — they have poor R:R
+ * and high reversal risk.
+ *
+ * Algorithm:
+ *  BEARISH (SELL):  Find the highest HIGH within the last `lookback` 4H candles
+ *                   (swing top of the current down-leg). If current close is
+ *                   more than `maxPct` % below that top, the bear leg is over-extended.
+ *
+ *  BULLISH (BUY):   Find the lowest LOW within the last `lookback` 4H candles
+ *                   (swing bottom of the current up-leg). If current close is
+ *                   more than `maxPct` % above that bottom, the bull leg is over-extended.
+ *
+ * Default: lookback = 20 candles (3.3 days), maxPct = 8%.
+ *   On XAUUSD @ 5000: 8% = $400 = 4000 pips. The Mar 25 rogue SELL had
+ *   already dropped ~17% from 5192 to 4402, so it correctly triggers.
+ *   The first Mar 9 BUY started fresh; its 20-bar swing bottom was ~5015
+ *   and entry was at 5192 → only 3.4% up — passes through.
+ *
+ * @param {Array}  data4h    - Sorted 4H candles up to the current bar.
+ * @param {string} direction - 'BULLISH' or 'BEARISH'.
+ * @param {number} lookback  - Bars to look back for the swing origin.
+ * @param {number} maxPct    - Max % extension before the leg is considered exhausted.
+ * @returns {boolean} true = over-extended, do NOT trade.
+ */
+function isTrendOverExtended(data4h, direction, lookback = 20, maxPct = 0.08) {
+    if (!data4h || data4h.length < lookback + 1) return false;
+    const slice     = data4h.slice(-lookback);
+    const lastClose = p(data4h[data4h.length - 1].close);
+
+    if (direction === 'BEARISH') {
+        const legTop = Math.max(...slice.map(c => p(c.high)));
+        const dropPct = (legTop - lastClose) / legTop;
+        return dropPct > maxPct;
+    } else {
+        const legBottom = Math.min(...slice.map(c => p(c.low)));
+        const risePct   = (lastClose - legBottom) / legBottom;
+        return risePct > maxPct;
+    }
 }
 
 /**
@@ -439,6 +500,13 @@ async function crt4_scan4H(symbol) {
         return null;
     }
 
+    // ── Trend over-extension guard (live scanner) ────────────────────────────
+    // Block if the last 20 4H bars (3.3 days) have already moved >8% from the swing origin.
+    if (isTrendOverExtended(data4h, sweep.direction, 20, 0.08)) {
+        console.log(`[CRT4] ${symbol} ${sweep.direction} leg over-extended — filtered.`);
+        return null;
+    }
+
     return sweep;
 }
 
@@ -474,8 +542,8 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
         console.log(`[CRT4] Fetching data for backtest: ${symbol}...`);
 
         const [raw4h, raw1h] = await Promise.all([
-            fetchTV(symbol, '4h', 3000, endDate),
-            fetchTV(symbol, '1h', 8000, endDate)
+            fetchTV(symbol, '4h', 1000, endDate),
+            fetchTV(symbol, '1h', 2000, endDate)
         ]);
 
         const startMs = new Date(startDate + 'T00:00:00Z').getTime();
@@ -508,11 +576,21 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
 
             if (!sweep) continue;
 
-            // ── Market bias filter: require sweep direction to match 4H trend ──
-            // Use at least 52 candles of context before the sweep for EMA-50.
+            // ── Market bias filter: require sweep direction to match dual EMA trend ──
+            // Use at least 205 candles of context for EMA-200.
             const trendSlice = raw4h.slice(0, i + 1);
             const trend = get4HTrend(trendSlice);
             if (trend && sweep.direction !== trend) continue; // against the trend — skip
+
+            // ── Trend over-extension guard ──────────────────────────────────────
+            // Reject if the current directional leg (last 20 4H bars = ~3.3 days)
+            // has already moved >8% from its swing origin.
+            // Catches late-trend continuation setups where the move has exhausted
+            // (e.g. the Mar 25 rogue SELL on XAUUSD after a ~17% bear leg).
+            if (isTrendOverExtended(trendSlice, sweep.direction, 20, 0.08)) {
+                console.log(`[CRT4] ${symbol} ${sweep.direction} leg over-extended, skipping.`);
+                continue;
+            }
 
             // Skip if we've already handled this exact sweep candle
             if (processedSweeps.has(sweep.confirmingTs)) continue;
