@@ -18,8 +18,8 @@ async function _fetchTVInternal(symbol, interval, amount, endDateStr) {
     const chart = new client.Session.Chart();
     
     // Support MTF mappings
-    const tvMap = { '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1day': 'D' };
-    const tvTimeframe = tvMap[interval] || '60'; // Default to 1h
+    const tvMap = { '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1D': 'D', '1W': 'W' };
+    const tvTimeframe = tvMap[interval] || 'D'; // Default to Daily if unrecognised
 
     // TV typically limits single requests to ~5000 max.
     const initialRequest = amount > 5000 ? 5000 : amount;

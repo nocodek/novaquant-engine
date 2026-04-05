@@ -274,7 +274,7 @@ function isTrendOverExtended(data4h, direction, lookback = 20, maxPct = 0.08) {
  * "Unswept" = no subsequent 4H candle within the dataset has yet traded through the level.
  * Minimum distance = 100 pips from entry to skip structures inside the BOS zone.
  */
-function find4HLiquidityTP(data4h, direction, entryPrice, symbol) {
+function find4HLiquidityTP(data4h, direction, entryPrice, symbol, sourceLabel = '4H Swing') {
     const minDist = 100 * getPipSize(symbol || 'DEFAULT');
     const candidates = [];
 
@@ -284,14 +284,14 @@ function find4HLiquidityTP(data4h, direction, entryPrice, symbol) {
             if (h < entryPrice + minDist) continue;
             // Only intact (unswept) swing highs — no later candle has exceeded this level
             const swept = data4h.slice(i + 1).some(fc => p(fc.high) > h);
-            if (!swept) candidates.push({ price: h, source: '4H Swing High' });
+            if (!swept) candidates.push({ price: h, source: `${sourceLabel} High` });
         }
 
         if (direction === 'BEARISH' && is4HSwingLow(data4h, i, 3)) {
             const l = p(data4h[i].low);
             if (l > entryPrice - minDist) continue;
             const swept = data4h.slice(i + 1).some(fc => p(fc.low) < l);
-            if (!swept) candidates.push({ price: l, source: '4H Swing Low' });
+            if (!swept) candidates.push({ price: l, source: `${sourceLabel} Low` });
         }
     }
 
@@ -513,7 +513,8 @@ async function crt4_scanDaily(symbol) {
     dataD.sort((a, b) => a.timestamp - b.timestamp);
 
     const trend = getDailyTrend(dataD);
-    const minRange = 200 * getPipSize(symbol);
+    // Min range: 100 pips on Daily (JPY pairs ~100pip days are meaningful institutional moves)
+    const minRange = 100 * getPipSize(symbol);
     const sweep = detect4HSweep(dataD, minRange);
     if (!sweep) return null;
     if (trend && sweep.direction !== trend) {
@@ -555,12 +556,12 @@ async function crt4_findTP(symbol, entryResult) {
         const data4h = await fetchTV(symbol, '4h', 300);
         if (!data4h || data4h.length < 10) return null;
         data4h.sort((a, b) => a.timestamp - b.timestamp);
-        return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol);
+        return find4HLiquidityTP(data4h, entryResult.direction, entryResult.entryPrice, symbol, '4H Swing');
     }
     const dataW = await fetchTV(symbol, '1W', 150);
     if (!dataW || dataW.length < 10) return null;
     dataW.sort((a, b) => a.timestamp - b.timestamp);
-    return find4HLiquidityTP(dataW, entryResult.direction, entryResult.entryPrice, symbol);
+    return find4HLiquidityTP(dataW, entryResult.direction, entryResult.entryPrice, symbol, 'Weekly Swing');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -600,8 +601,9 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
         rawTP.sort((a, b)    => a.timestamp - b.timestamp);
 
         const pipSize  = getPipSize(symbol);
-        // Minimum sweep candle range: 100 pips for XAUUSD (4H), 200 pips for others (Daily)
-        const minRange = (isGold ? 100 : 200) * pipSize;
+        // Min range: 100 pips for XAUUSD 4H sweeps AND for Daily Forex/Crypto sweeps.
+        // (200 was too high for Daily Forex pairs like GBPJPY which average 80-180 pip days)
+        const minRange = 100 * pipSize;
         // Extension guard lookback: 20 bars for 4H (3.3 days), 10 bars for Daily (2 weeks)
         const extLookback = isGold ? 20 : 10;
 
@@ -652,7 +654,7 @@ async function runCRT4Backtest(symbol, startDate, endDate) {
             // Find TP: no-lookahead slice of TP timeframe data
             const sliceTP = rawTP.filter(c => c.timestamp <= retestCandle.timestamp);
             const tpResult = sliceTP.length >= 5
-                ? find4HLiquidityTP(sliceTP, entryResult.direction, entryResult.entryPrice, symbol)
+                ? find4HLiquidityTP(sliceTP, entryResult.direction, entryResult.entryPrice, symbol, isGold ? '4H Swing' : 'Weekly Swing')
                 : null;
 
             const sl = entryResult.slPrice;
